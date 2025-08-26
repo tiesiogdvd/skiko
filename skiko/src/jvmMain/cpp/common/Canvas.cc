@@ -6,8 +6,6 @@
 #include "SkVertices.h"
 #include "hb.h"
 #include "interop.hh"
-#include "include/gpu/GrDirectContext.h"
-#include "include/gpu/GrRecordingContext.h"
 
 static void deleteCanvas(SkCanvas* canvas) {
     // std::cout << "Deleting [SkCanvas " << canvas << "]" << std::endl;
