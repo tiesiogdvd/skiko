@@ -5,8 +5,6 @@
 #include "SkVertices.h"
 #include "hb.h"
 #include "common.h"
-#include "include/gpu/GrDirectContext.h"
-#include "include/gpu/GrRecordingContext.h"
 
 static void deleteCanvas(SkCanvas* canvas) {
     // std::cout << "Deleting [SkCanvas " << canvas << "]" << std::endl;
@@ -367,7 +365,6 @@ SKIKO_EXPORT void org_jetbrains_skia_Canvas__1nRestoreToCount(KNativePointer ptr
 
 SKIKO_EXPORT KNativePointer org_jetbrains_skia_Canvas__1nGetRecordingContext(KNativePointer canvasPtr) {
     SkCanvas* canvas = reinterpret_cast<SkCanvas*>(canvasPtr);
-    auto* context = canvas->recordingContext();
+    void* context = canvas->recordingContext();
     return reinterpret_cast<KNativePointer>(context);
 }
-
