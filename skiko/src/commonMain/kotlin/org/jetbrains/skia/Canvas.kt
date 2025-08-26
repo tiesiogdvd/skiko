@@ -1387,6 +1387,21 @@ open class Canvas internal constructor(ptr: NativePointer, managed: Boolean, int
             reachabilityBarrier(this)
         }
 
+    /**
+     *
+     * Returns the recording context being used by the Canvas.
+     *
+     * @return the recording context, if available; null otherwise
+     */
+    val recordingContext: DirectContext?
+        get() = try {
+            Stats.onNativeCall()
+            val ptr = _nGetRecordingContext(_ptr)
+            if (ptr == NullPointer) null else DirectContext(ptr)
+        } finally {
+            reachabilityBarrier(this)
+        }
+
     fun restore(): Canvas {
         Stats.onNativeCall()
         _nRestore(_ptr)
@@ -1698,3 +1713,6 @@ private external fun _nRestore(ptr: NativePointer)
 
 @ExternalSymbolName("org_jetbrains_skia_Canvas__1nRestoreToCount")
 private external fun _nRestoreToCount(ptr: NativePointer, saveCount: Int)
+
+@ExternalSymbolName("org_jetbrains_skia_Canvas__1nGetRecordingContext")
+private external fun _nGetRecordingContext(ptr: NativePointer): NativePointer

@@ -6,6 +6,8 @@
 #include "SkVertices.h"
 #include "hb.h"
 #include "interop.hh"
+#include "include/gpu/GrDirectContext.h"
+#include "include/gpu/GrRecordingContext.h"
 
 static void deleteCanvas(SkCanvas* canvas) {
     // std::cout << "Deleting [SkCanvas " << canvas << "]" << std::endl;
@@ -367,3 +369,11 @@ extern "C" JNIEXPORT void JNICALL Java_org_jetbrains_skia_CanvasKt__1nRestore(JN
 extern "C" JNIEXPORT void JNICALL Java_org_jetbrains_skia_CanvasKt__1nRestoreToCount(JNIEnv* env, jclass jclass, jlong ptr, jint saveCount) {
     reinterpret_cast<SkCanvas*>(static_cast<uintptr_t>(ptr))->restoreToCount(saveCount);
 }
+
+extern "C" JNIEXPORT jlong JNICALL Java_org_jetbrains_skia_CanvasKt__1nGetRecordingContext(JNIEnv* env, jclass jclass, jlong canvasPtr) {
+    SkCanvas* canvas = reinterpret_cast<SkCanvas*>(static_cast<uintptr_t>(canvasPtr));
+    auto* context = canvas->recordingContext();
+    return reinterpret_cast<jlong>(context);
+}
+
+
