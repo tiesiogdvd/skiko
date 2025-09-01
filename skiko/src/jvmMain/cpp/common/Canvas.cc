@@ -372,15 +372,6 @@ extern "C" JNIEXPORT void JNICALL Java_org_jetbrains_skia_CanvasKt__1nRestoreToC
 extern "C" JNIEXPORT jlong JNICALL Java_org_jetbrains_skia_CanvasKt__1nGetRecordingContext(JNIEnv* env, jclass jclass, jlong canvasPtr) {
     SkCanvas* canvas = reinterpret_cast<SkCanvas*>(static_cast<uintptr_t>(canvasPtr));
     auto* context = canvas->recordingContext();
-    if (!context) {
-        return 0;
-    }
-
-    auto* directContext = context->asDirectContext();
-    if (directContext) {
-        return reinterpret_cast<jlong>(directContext);
-    }
-
     return reinterpret_cast<jlong>(context);
 }
 
