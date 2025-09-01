@@ -1,6 +1,7 @@
 #include <iostream>
 #include <jni.h>
 #include "SkCanvas.h"
+#include "SkSurface.h"
 #include "SkRRect.h"
 #include "SkTextBlob.h"
 #include "SkVertices.h"
