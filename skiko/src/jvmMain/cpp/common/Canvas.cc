@@ -383,4 +383,8 @@ extern "C" JNIEXPORT jlong JNICALL Java_org_jetbrains_skia_CanvasKt__1nGetRecord
     return reinterpret_cast<jlong>(context);
 }
 
-
+extern "C" JNIEXPORT jlong JNICALL Java_org_jetbrains_skia_CanvasKt__1nGetSurface(JNIEnv* env, jclass jclass, jlong canvasPtr) {
+    SkCanvas* canvas = reinterpret_cast<SkCanvas*>(static_cast<uintptr_t>(canvasPtr));
+    SkSurface* surface = canvas->getSurface();
+    return reinterpret_cast<jlong>(surface);
+}
