@@ -1402,6 +1402,20 @@ open class Canvas internal constructor(ptr: NativePointer, managed: Boolean, int
             reachabilityBarrier(this)
         }
 
+    /**
+     * Returns the Surface this canvas is drawing into, if any.
+     *
+     * @return the Surface if canvas is backed by one, null otherwise
+     */
+    val surface: Surface?
+        get() = try {
+            Stats.onNativeCall()
+            val ptr = _nGetSurface(_ptr)
+            if (ptr == NullPointer) null else Surface(ptr)
+        } finally {
+            reachabilityBarrier(this)
+        }
+
     fun restore(): Canvas {
         Stats.onNativeCall()
         _nRestore(_ptr)
@@ -1716,3 +1730,6 @@ private external fun _nRestoreToCount(ptr: NativePointer, saveCount: Int)
 
 @ExternalSymbolName("org_jetbrains_skia_Canvas__1nGetRecordingContext")
 private external fun _nGetRecordingContext(ptr: NativePointer): NativePointer
+
+@ExternalSymbolName("org_jetbrains_skia_CanvasKt__1nGetSurface")
+private external fun _nGetSurface(ptr: NativePointer): NativePointer
