@@ -21,4 +21,25 @@ fun DirectContext.Companion.makeGLWithInterface(assembledInterface: GLAssembledI
     return DirectContext(ptr)
 }
 
+/**
+ * Creates OpenGL ES [DirectContext] using EGL's eglGetProcAddress for function loading.
+ * This is specifically designed for use with ANGLE or other OpenGL ES implementations.
+ *
+ * There must be a current OpenGL ES context set (i.e., by calling `eglMakeCurrent` before this),
+ * otherwise this function will fail.
+ * 
+ * This method internally uses `eglGetProcAddress` to resolve OpenGL ES function pointers,
+ * making it compatible with ANGLE and other EGL-based OpenGL ES implementations.
+ * 
+ * @return A new DirectContext configured for OpenGL ES
+ * @throws RenderException if the context cannot be created
+ */
+fun DirectContext.Companion.makeGLES(): DirectContext {
+    Stats.onNativeCall()
+    val ptr = _nMakeGLES()
+    if (ptr == NullPointer) throw RenderException("Can't create OpenGL ES DirectContext")
+    return DirectContext(ptr)
+}
+
 private external fun _nMakeGLWithInterface(interfacePtr: NativePointer): NativePointer
+private external fun _nMakeGLES(): NativePointer
