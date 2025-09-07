@@ -22,24 +22,24 @@ fun DirectContext.Companion.makeGLWithInterface(assembledInterface: GLAssembledI
 }
 
 /**
- * Creates OpenGL ES [DirectContext] using EGL's eglGetProcAddress for function loading.
- * This is specifically designed for use with ANGLE or other OpenGL ES implementations.
+ * Creates [DirectContext] using EGL (Embedded-System Graphics Library).
+ * This is designed for use with EGL-based implementations including ANGLE.
  *
- * There must be a current OpenGL ES context set (i.e., by calling `eglMakeCurrent` before this),
+ * There must be a current EGL context set (i.e., by calling `eglMakeCurrent` before this),
  * otherwise this function will fail.
  * 
- * This method internally uses `eglGetProcAddress` to resolve OpenGL ES function pointers,
- * making it compatible with ANGLE and other EGL-based OpenGL ES implementations.
+ * This method uses Skia's GrGLMakeEGLInterface() which internally resolves
+ * OpenGL/OpenGL ES function pointers via eglGetProcAddress.
  * 
- * @return A new DirectContext configured for OpenGL ES
+ * @return A new DirectContext configured for EGL
  * @throws RenderException if the context cannot be created
  */
-fun DirectContext.Companion.makeGLES(): DirectContext {
+fun DirectContext.Companion.makeEGL(): DirectContext {
     Stats.onNativeCall()
-    val ptr = _nMakeGLES()
-    if (ptr == NullPointer) throw RenderException("Can't create OpenGL ES DirectContext")
+    val ptr = _nMakeEGL()
+    if (ptr == NullPointer) throw RenderException("Can't create EGL DirectContext")
     return DirectContext(ptr)
 }
 
 private external fun _nMakeGLWithInterface(interfacePtr: NativePointer): NativePointer
-private external fun _nMakeGLES(): NativePointer
+private external fun _nMakeEGL(): NativePointer

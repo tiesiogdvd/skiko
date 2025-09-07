@@ -4,14 +4,7 @@
 #include "ganesh/gl/GrGLAssembleInterface.h"
 #include "ganesh/gl/GrGLDirectContext.h"
 #include "ganesh/gl/GrGLInterface.h"
-
-// Include EGL headers if available for makeGLES
-#if defined(__has_include)
-  #if __has_include(<EGL/egl.h>)
-    #define HAS_EGL 1
-    #include <EGL/egl.h>
-  #endif
-#endif
+#include "ganesh/gl/egl/GrGLMakeEGLInterface.h"
 
 extern "C" JNIEXPORT jlong JNICALL Java_org_jetbrains_skia_DirectContextKt__1nMakeGL
   (JNIEnv* env, jclass jclass) {
@@ -24,28 +17,15 @@ extern "C" JNIEXPORT jlong JNICALL Java_org_jetbrains_skia_DirectContext_1jvmKt_
     return reinterpret_cast<jlong>(GrDirectContexts::MakeGL(interface).release());
 }
 
-extern "C" JNIEXPORT jlong JNICALL Java_org_jetbrains_skia_DirectContext_1jvmKt__1nMakeGLES
+extern "C" JNIEXPORT jlong JNICALL Java_org_jetbrains_skia_DirectContext_1jvmKt__1nMakeEGL
   (JNIEnv* env, jclass jclass) {
-#ifdef HAS_EGL
-    // Create GL interface using eglGetProcAddress for OpenGL ES
-    sk_sp<const GrGLInterface> glInterface(GrGLMakeAssembledInterface(
-        nullptr,
-        [](void* ctx, const char name[]) -> GrGLFuncPtr {
-            // Use eglGetProcAddress to resolve OpenGL ES functions
-            // This works with ANGLE and other EGL-based implementations
-            return reinterpret_cast<GrGLFuncPtr>(eglGetProcAddress(name));
-        }));
-    
+    // Use Skia's built-in EGL interface creator
+    // This requires Skia to be built with skia_use_egl=true
+    sk_sp<const GrGLInterface> glInterface = GrGLMakeEGLInterface();
     if (!glInterface) {
         return 0;
     }
-    
-    // Create DirectContext with the OpenGL ES interface
-    sk_sp<GrDirectContext> context = GrDirectContexts::MakeGL(glInterface);
-    return reinterpret_cast<jlong>(context.release());
-#else
-    return reinterpret_cast<jlong>(GrDirectContexts::MakeGL().release());
-#endif
+    return reinterpret_cast<jlong>(GrDirectContexts::MakeGL(glInterface).release());
 }
 
 #ifdef SK_METAL
