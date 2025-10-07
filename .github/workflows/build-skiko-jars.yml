@@ -1,0 +1,126 @@
+name: Build Skiko Jars
+
+on:
+  push:
+    branches: [ master ]
+  workflow_dispatch:
+
+jobs:
+  macos:
+    name: Build macOS, iOS & tvOS jars
+    runs-on: macos-13
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v3
+        with:
+          distribution: adopt
+          java-version: "21"
+          cache: gradle
+
+      - name: Publish Skiko artifacts
+        shell: bash
+        run: |
+          ./gradlew --stacktrace --no-daemon \
+            -Pskiko.native.enabled=true \
+            :skiko:publishToMavenLocal \
+            -x test
+
+      - name: Upload Maven artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: skiko-macos-artifacts
+          path: ~/.m2/repository/org/jetbrains/skiko
+          if-no-files-found: error
+
+  linux:
+    name: Build Linux & Android jars
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v3
+        with:
+          distribution: adopt
+          java-version: "21"
+          cache: gradle
+
+      - name: Set up Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r21e
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v2
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            libglu1-mesa-dev \
+            libxrandr-dev \
+            libdbus-1-dev \
+            multistrap \
+            gcc-9 \
+            g++-9 \
+            gcc-9-aarch64-linux-gnu \
+            g++-9-aarch64-linux-gnu
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 60 --slave /usr/bin/g++ g++ /usr/bin/g++-9
+          sudo update-alternatives --install \
+            /usr/bin/aarch64-linux-gnu-gcc aarch64-linux-gnu-gcc /usr/bin/aarch64-linux-gnu-gcc-9 60 \
+            --slave /usr/bin/aarch64-linux-gnu-g++ aarch64-linux-gnu-g++ /usr/bin/aarch64-linux-gnu-g++-9
+
+      - name: Publish Skiko artifacts
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          ./gradlew --stacktrace --no-daemon \
+            -Pskiko.native.enabled=true \
+            -Pskiko.android.enabled=true \
+            -Pkotlin.native.cacheKind.linuxX64=none \
+            :skiko:publishToMavenLocal \
+            -x test
+
+      - name: Upload Maven artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: skiko-linux-artifacts
+          path: ~/.m2/repository/org/jetbrains/skiko
+          if-no-files-found: error
+
+  windows:
+    name: Build Windows jars
+    runs-on: windows-2022
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v3
+        with:
+          distribution: adopt
+          java-version: "21"
+          cache: gradle
+
+      - name: Publish Skiko artifacts
+        shell: bash
+        run: |
+          ./gradlew --stacktrace --no-daemon \
+            -Pskiko.native.enabled=true \
+            :skiko:publishToMavenLocal \
+            -x test
+
+      - name: Upload Maven artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: skiko-windows-artifacts
+          path: ~/.m2/repository/org/jetbrains/skiko
+          if-no-files-found: error
