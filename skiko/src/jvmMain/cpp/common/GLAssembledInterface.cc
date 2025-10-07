@@ -1,7 +1,6 @@
 #include <jni.h>
 
 #include "ganesh/gl/GrGLAssembleInterface.h"
-#include "ganesh/gl/GrGLAssembleGLESInterface.h"
 #include "ganesh/gl/GrGLInterface.h"
 
 extern "C" JNIEXPORT jlong JNICALL Java_org_jetbrains_skia_GLAssembledInterfaceKt__1nCreateFromNativePointers
