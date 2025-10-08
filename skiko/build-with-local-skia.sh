@@ -75,7 +75,7 @@ set -x # print all commands
 cd "$(dirname "$0")"
 SCRIPT_DIR="$(pwd)"
 
-git clone https://github.com/JetBrains/skia-pack.git || echo "skia-pack exists. You can remove it or update by hands with git pull"
+git clone https://github.com/tiesiogdvd/skia-pack.git || echo "skia-pack exists. You can remove it or update by hands with git pull"
 cd skia-pack
 [ -d "skia" ] && echo "skip cript/checkout.py, because directory skia-pack/skia already exists"
 [ ! -d "skia" ] && python3 script/checkout.py --version "$SKIA_VERSION"
