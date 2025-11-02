@@ -10,19 +10,26 @@ on:
 
 jobs:
   macos:
-    name: Build macOS, iOS & tvOS jars
-    runs-on: macos-13
+    name: Build macOS (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - arch: x64
+            os: macos-13
+          - arch: arm64
+            os: macos-14
     steps:
       - name: Check out code
         uses: actions/checkout@v4
-
+      
       - name: Set up JDK 21
         uses: actions/setup-java@v3
         with:
           distribution: adopt
           java-version: "21"
           cache: gradle
-
+      
       - name: Publish Skiko artifacts
         shell: bash
         run: |
@@ -30,12 +37,85 @@ jobs:
             -Pskiko.native.enabled=true \
             :skiko:publishToMavenLocal \
             -x test
-
+      
       - name: Upload Maven artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: skiko-macos-artifacts
+          name: skiko-macos-${{ matrix.arch }}-artifacts
           path: ~/.m2/repository/org/jetbrains/skiko
+          if-no-files-found: error
+
+  macos-ios-tvos:
+    name: Build iOS & tvOS
+    runs-on: macos-13
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+      
+      - name: Set up JDK 21
+        uses: actions/setup-java@v3
+        with:
+          distribution: adopt
+          java-version: "21"
+          cache: gradle
+      
+      - name: Publish Skiko iOS/tvOS artifacts
+        shell: bash
+        run: |
+          ./gradlew --stacktrace --no-daemon \
+            -Pskiko.native.enabled=true \
+            :skiko:publishIosArm64PublicationToMavenLocal \
+            :skiko:publishIosSimulatorArm64PublicationToMavenLocal \
+            :skiko:publishIosX64PublicationToMavenLocal \
+            :skiko:publishTvosArm64PublicationToMavenLocal \
+            :skiko:publishTvosSimulatorArm64PublicationToMavenLocal \
+            :skiko:publishTvosX64PublicationToMavenLocal \
+            -x test
+      
+      - name: Upload Maven artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: skiko-ios-tvos-artifacts
+          path: ~/.m2/repository/org/jetbrains/skiko
+          if-no-files-found: error
+
+  merge-macos-artifacts:
+    name: Merge macOS artifacts
+    needs: [macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download x64 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: skiko-macos-x64-artifacts
+          path: artifacts-x64
+      
+      - name: Download ARM64 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: skiko-macos-arm64-artifacts
+          path: artifacts-arm64
+      
+      - name: Merge artifacts
+        shell: bash
+        run: |
+          mkdir -p merged-artifacts
+          
+          # Copy x64 artifacts as base
+          cp -r artifacts-x64/* merged-artifacts/
+          
+          # Merge ARM64 artifacts
+          # This copies ARM64-specific files while keeping x64 files
+          rsync -av artifacts-arm64/ merged-artifacts/
+          
+          echo "Merged artifact structure:"
+          find merged-artifacts -type f | sort
+      
+      - name: Upload merged Maven artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: skiko-macos-merged-artifacts
+          path: merged-artifacts
           if-no-files-found: error
 
   linux:
@@ -44,23 +124,23 @@ jobs:
     steps:
       - name: Check out code
         uses: actions/checkout@v4
-
+      
       - name: Set up JDK 21
         uses: actions/setup-java@v3
         with:
           distribution: adopt
           java-version: "21"
           cache: gradle
-
+      
       - name: Set up Android NDK
         id: setup-ndk
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: r21e
-
+      
       - name: Set up Android SDK
         uses: android-actions/setup-android@v2
-
+      
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update -y
@@ -77,7 +157,7 @@ jobs:
           sudo update-alternatives --install \
             /usr/bin/aarch64-linux-gnu-gcc aarch64-linux-gnu-gcc /usr/bin/aarch64-linux-gnu-gcc-9 60 \
             --slave /usr/bin/aarch64-linux-gnu-g++ aarch64-linux-gnu-g++ /usr/bin/aarch64-linux-gnu-g++-9
-
+      
       - name: Publish Skiko artifacts
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
@@ -88,7 +168,7 @@ jobs:
             -Pkotlin.native.cacheKind.linuxX64=none \
             :skiko:publishToMavenLocal \
             -x test
-
+      
       - name: Upload Maven artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -102,17 +182,17 @@ jobs:
     steps:
       - name: Check out code
         uses: actions/checkout@v4
-
+      
       - name: Set up MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
-
+      
       - name: Set up JDK 21
         uses: actions/setup-java@v3
         with:
           distribution: adopt
           java-version: "21"
           cache: gradle
-
+      
       - name: Publish Skiko artifacts
         shell: bash
         run: |
@@ -120,7 +200,7 @@ jobs:
             -Pskiko.native.enabled=true \
             :skiko:publishToMavenLocal \
             -x test
-
+      
       - name: Upload Maven artifacts
         uses: actions/upload-artifact@v4
         with:
