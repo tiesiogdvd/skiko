@@ -12,8 +12,14 @@ import kotlin.coroutines.CoroutineContext
  * Dispatcher for UI thread, which is used in the current implementation of native UI integration.
  * Currently, it uses Swing event dispatching thread.
  */
+private var _mainUIDispatcherOverride: CoroutineDispatcher? = null
+
 val MainUIDispatcher: CoroutineDispatcher
-    get() = SwingDispatcher
+    get() = _mainUIDispatcherOverride ?: SwingDispatcher
+
+fun setMainUIDispatcher(dispatcher: MainCoroutineDispatcher) {
+    _mainUIDispatcherOverride = dispatcher
+}
 
 /**
  * Dispatcher for Swing event dispatching thread.
