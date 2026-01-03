@@ -13,6 +13,7 @@ import org.junit.Test
 import java.awt.Point
 import javax.swing.WindowConstants
 import kotlin.math.*
+import kotlin.time.Duration.Companion.nanoseconds
 
 @Suppress("BlockingMethodInNonBlockingContext", "SameParameterValue")
 class SkiaLayerPerformanceTest {
@@ -58,7 +59,7 @@ class SkiaLayerPerformanceTest {
                     if (canCollect && frameTimes.size < frameCount) {
                         frameTimes.add(System.nanoTime()) // we check the real time, not the time provided by the argument
                     }
-                    window.layer.needRedraw()
+                    window.layer.needRender()
                 }
             }
             window.isUndecorated = true
@@ -75,6 +76,13 @@ class SkiaLayerPerformanceTest {
             println("Deltas " + millis.map { String.format("%.1f", it) })
             println("Average %.2f".format(millis.average()))
             println("Standard deviation %.2f".format(millis.stddev()))
+            println("Expected frame time: " +
+                    "${if (expectedFrameNanos.isFinite()) {
+                        expectedFrameNanos.nanoseconds.inWholeMilliseconds
+                    } else { 
+                        expectedFrameNanos
+                    }} ms."
+            )
 
             fun deviateMessage(percent: Double, deviated: List<Long>): String {
                 val deviatedStr = deviated.map { String.format("%.1f", it / 1E6) }

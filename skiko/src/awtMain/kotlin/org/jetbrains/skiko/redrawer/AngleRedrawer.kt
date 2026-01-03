@@ -11,7 +11,11 @@ internal class AngleRedrawer(
     private val properties: SkiaLayerProperties
 ) : AWTRedrawer(layer, analytics, GraphicsApi.ANGLE) {
     init {
-        loadAngleLibrary()
+        try {
+            loadAngleLibrary()
+        } catch (e: Exception) {
+            throw RenderException("Failed to load ANGLE library", cause = e)
+        }
     }
 
     private val contextHandler = AngleContextHandler(layer)
@@ -59,16 +63,14 @@ internal class AngleRedrawer(
         super.dispose()
     }
 
-    override fun needRedraw(throttledToVsync: Boolean) {
+    override fun needRender(throttledToVsync: Boolean) {
         checkDisposed()
         frameDispatcher.scheduleFrame()
     }
 
-    override fun redrawImmediately(updateNeeded: Boolean) {
+    override fun renderImmediately() {
         checkDisposed()
-        if (updateNeeded) {
-            update()
-        }
+        update()
         inDrawScope {
             if (!isDisposed) { // Redrawer may be disposed in user code, during `update`
                 drawAndSwap(withVsync = SkikoProperties.windowsWaitForVsyncOnRedrawImmediately)
