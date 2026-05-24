@@ -27,7 +27,7 @@ internal class SoftwareRedrawer(
 
         if (layer.isShowing) {
             update()
-            inDrawScope(contextHandler::draw)
+            inDrawScope { contextHandler.draw() }
         }
     }
 
@@ -54,5 +54,10 @@ internal class SoftwareRedrawer(
                 contextHandler.draw()
             }
         }
+    }
+
+    override fun isTransparentBackgroundSupported(): Boolean {
+        // TODO: why Software rendering has another transparency logic from the beginning
+        return hostOs == OS.MacOS
     }
 }

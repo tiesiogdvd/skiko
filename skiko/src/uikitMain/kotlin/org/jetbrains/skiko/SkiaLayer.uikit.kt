@@ -2,6 +2,7 @@ package org.jetbrains.skiko
 
 import kotlinx.cinterop.useContents
 import org.jetbrains.skia.Canvas
+import org.jetbrains.skia.Color
 import org.jetbrains.skia.PixelGeometry
 import org.jetbrains.skia.Surface
 
@@ -17,10 +18,6 @@ actual open class SkiaLayer {
 
     actual var fullscreen: Boolean
         get() = true
-        set(_) { throw UnsupportedOperationException() }
-
-    actual var transparency: Boolean
-        get() = false
         set(_) { throw UnsupportedOperationException() }
 
     actual fun needRender(throttledToVsync: Boolean) {
@@ -67,7 +64,9 @@ actual open class SkiaLayer {
     }
 
     internal fun draw(surface: Surface) {
-        renderDelegate?.onRender(surface.canvas, surface.width, surface.height, currentNanoTime())
+        val canvas = surface.canvas
+        canvas.clear(Color.WHITE)
+        renderDelegate?.onRender(canvas, surface.width, surface.height, currentNanoTime())
     }
 
     actual val pixelGeometry: PixelGeometry

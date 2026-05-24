@@ -122,7 +122,7 @@ class Paint : Managed {
     var mode: PaintMode
         get() = try {
             Stats.onNativeCall()
-            PaintMode.values().get(_nGetMode(_ptr))
+            PaintMode.entries[_nGetMode(_ptr)]
         } finally {
             reachabilityBarrier(this)
         }
@@ -338,7 +338,7 @@ class Paint : Managed {
     var strokeCap: PaintStrokeCap
         get() = try {
             Stats.onNativeCall()
-            PaintStrokeCap.values().get(_nGetStrokeCap(_ptr))
+            PaintStrokeCap.entries[_nGetStrokeCap(_ptr)]
         } finally {
             reachabilityBarrier(this)
         }
@@ -359,7 +359,7 @@ class Paint : Managed {
     var strokeJoin: PaintStrokeJoin
         get() = try {
             Stats.onNativeCall()
-            PaintStrokeJoin.values().get(_nGetStrokeJoin(_ptr))
+            PaintStrokeJoin.entries[_nGetStrokeJoin(_ptr)]
         } finally {
             reachabilityBarrier(this)
         }
@@ -436,7 +436,7 @@ class Paint : Managed {
     var blendMode: BlendMode
         get() = try {
             Stats.onNativeCall()
-            BlendMode.values().get(_nGetBlendMode(_ptr))
+            BlendMode.entries[_nGetBlendMode(_ptr)]
         } finally {
             reachabilityBarrier(this)
         }
@@ -444,6 +444,35 @@ class Paint : Managed {
             Stats.onNativeCall()
             _nSetBlendMode(_ptr, value.ordinal)
         } finally {
+            reachabilityBarrier(this)
+        }
+
+    /**
+     * Returns the user-supplied blend function, if one has been set.
+     *
+     * A null blender signifies the default SrcOver behavior.
+     *
+     * For convenience, you can call [blendMode] if the blend effect can be expressed
+     * as one of those values.
+     *
+     * @see [https://fiddle.skia.org/c/@Paint_setBlender](https://fiddle.skia.org/c/@Paint_setBlender)
+     * @see [https://fiddle.skia.org/c/@Paint_refBlender](https://fiddle.skia.org/c/@Paint_refBlender)
+     *
+     * @return  the [Blender] assigned to this paint, otherwise null
+     */
+    var blender: Blender?
+        get() = try {
+            Stats.onNativeCall()
+            val blenderPtr = _nGetBlender(_ptr)
+            if (blenderPtr == NullPointer) null else Blender(blenderPtr)
+        } finally {
+            reachabilityBarrier(this)
+        }
+        set(value) = try {
+            Stats.onNativeCall()
+            _nSetBlender(_ptr, getPtr(value))
+        } finally {
+            reachabilityBarrier(value)
             reachabilityBarrier(this)
         }
 
@@ -664,6 +693,12 @@ private external fun _nGetImageFilter(ptr: NativePointer): NativePointer
 
 @ExternalSymbolName("org_jetbrains_skia_Paint__1nSetImageFilter")
 private external fun _nSetImageFilter(ptr: NativePointer, filterPtr: NativePointer)
+
+@ExternalSymbolName("org_jetbrains_skia_Paint__1nGetBlender")
+private external fun _nGetBlender(ptr: NativePointer): NativePointer
+
+@ExternalSymbolName("org_jetbrains_skia_Paint__1nSetBlender")
+private external fun _nSetBlender(ptr: NativePointer, blenderPtr: NativePointer)
 
 @ExternalSymbolName("org_jetbrains_skia_Paint__1nHasNothingToDraw")
 private external fun _nHasNothingToDraw(ptr: NativePointer): Boolean

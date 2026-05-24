@@ -82,7 +82,7 @@ class ParagraphStyle : Managed(ParagraphStyle_nMake(), _FinalizerHolder.PTR) {
     var direction: Direction
         get() = try {
             Stats.onNativeCall()
-            Direction.values()[_nGetDirection(_ptr)]
+            Direction.entries[_nGetDirection(_ptr)]
         } finally {
             reachabilityBarrier(this)
         }
@@ -97,7 +97,7 @@ class ParagraphStyle : Managed(ParagraphStyle_nMake(), _FinalizerHolder.PTR) {
     var alignment: Alignment
         get() = try {
             Stats.onNativeCall()
-            Alignment.values()[_nGetAlignment(_ptr)]
+            Alignment.entries[_nGetAlignment(_ptr)]
         } finally {
             reachabilityBarrier(this)
         }
@@ -157,7 +157,7 @@ class ParagraphStyle : Managed(ParagraphStyle_nMake(), _FinalizerHolder.PTR) {
     var heightMode: HeightMode
         get() = try {
             Stats.onNativeCall()
-            HeightMode.values()[_nGetHeightMode(_ptr)]
+            HeightMode.entries[_nGetHeightMode(_ptr)]
         } finally {
             reachabilityBarrier(this)
         }
@@ -171,7 +171,7 @@ class ParagraphStyle : Managed(ParagraphStyle_nMake(), _FinalizerHolder.PTR) {
     val effectiveAlignment: Alignment
         get() = try {
             Stats.onNativeCall()
-            Alignment.values()[_nGetEffectiveAlignment(_ptr)]
+            Alignment.entries[_nGetEffectiveAlignment(_ptr)]
         } finally {
             reachabilityBarrier(this)
         }
@@ -190,25 +190,19 @@ class ParagraphStyle : Managed(ParagraphStyle_nMake(), _FinalizerHolder.PTR) {
         return this
     }
 
+    @Suppress("DEPRECATION_ERROR")
+    @Deprecated(
+        message = "Replaced by separate properties in TextStyle: fontEdging, fontHinting, subpixel",
+        level = DeprecationLevel.ERROR,
+    )
     var fontRastrSettings: FontRastrSettings
-        get() = try {
-            Stats.onNativeCall()
-            val edging = FontEdging.values()[_nGetEdging(_ptr)]
-            Stats.onNativeCall()
-            val hinting = FontHinting.values()[_nGetHinting(_ptr)]
-            Stats.onNativeCall()
-            // by some obscure reason kotlinjs makes difference between number encoded booleans returned from `_nGetSubpixel` and regular booleans
-            // AssertionError: Expected <FontRastrSettings(edging=ALIAS, hinting=NONE, subpixel=false)>, actual <FontRastrSettings(edging=ALIAS, hinting=NONE, subpixel=0)>
-            val subpixel = _nGetSubpixel(_ptr).not().not()
-            FontRastrSettings(edging, hinting, subpixel)
-        } finally {
-            reachabilityBarrier(this)
+        get() = textStyle.let {
+            FontRastrSettings(it.fontEdging, it.fontHinting, it.subpixel)
         }
-        set(value) = try {
-            Stats.onNativeCall()
-            _nSetFontRastrSettings(_ptr, value.edging.ordinal, value.hinting.ordinal, value.subpixel)
-        } finally {
-            reachabilityBarrier(this)
+        set(value) = textStyle.let {
+            it.fontEdging = value.edging
+            it.fontHinting = value.hinting
+            it.subpixel = value.subpixel
         }
 
     var isApplyRoundingHackEnabled: Boolean
@@ -316,18 +310,6 @@ private external fun _nIsHintingEnabled(ptr: NativePointer): Boolean
 
 @ExternalSymbolName("org_jetbrains_skia_paragraph_ParagraphStyle__1nDisableHinting")
 private external fun _nDisableHinting(ptr: NativePointer)
-
-@ExternalSymbolName("org_jetbrains_skia_paragraph_ParagraphStyle__1nSetFontRastrSettings")
-private external fun _nSetFontRastrSettings(ptr: NativePointer, edging: Int, hinting: Int, subpixel: Boolean)
-
-@ExternalSymbolName("org_jetbrains_skia_paragraph_ParagraphStyle__1nGetEdging")
-private external fun _nGetEdging(ptr: NativePointer): Int
-
-@ExternalSymbolName("org_jetbrains_skia_paragraph_ParagraphStyle__1nGetHinting")
-private external fun _nGetHinting(ptr: NativePointer): Int
-
-@ExternalSymbolName("org_jetbrains_skia_paragraph_ParagraphStyle__1nGetSubpixel")
-private external fun _nGetSubpixel(ptr: NativePointer): Boolean
 
 @ExternalSymbolName("org_jetbrains_skia_paragraph_ParagraphStyle__1nGetApplyRoundingHack")
 private external fun _nGetApplyRoundingHack(ptr: NativePointer): Boolean

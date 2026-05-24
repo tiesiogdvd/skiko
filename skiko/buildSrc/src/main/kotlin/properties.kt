@@ -10,7 +10,7 @@ enum class OS(
     Linux("linux", arrayOf()),
     Android("android", arrayOf()),
     Windows("windows", arrayOf()),
-    MacOS("macos", arrayOf("-mmacosx-version-min=10.15")),
+    MacOS("macos", arrayOf("-mmacosx-version-min=11.0")),
     Wasm("wasm", arrayOf()),
     IOS("ios", arrayOf()),
     TVOS("tvos", arrayOf())
@@ -82,15 +82,15 @@ enum class SkiaBuildType(
     DEBUG(
         id = "Debug",
         flags = arrayOf("-DSK_DEBUG"),
-        clangFlags = arrayOf("-std=c++17", "-g", "-DSK_TRIVIAL_ABI=[[clang::trivial_abi]]"),
-        winCompilerFlags = arrayOf("/Zi", "/std:c++17"),
+        clangFlags = arrayOf("-std=c++2a", "-g", "-DSK_TRIVIAL_ABI=[[clang::trivial_abi]]"),
+        winCompilerFlags = arrayOf("/Zi", "/std:c++20"),
         winLinkerFlags = arrayOf("/DEBUG"),
     ),
     RELEASE(
         id = "Release",
         flags = arrayOf("-DNDEBUG"),
-        clangFlags = arrayOf("-std=c++17", "-O3"),
-        winCompilerFlags = arrayOf("/O2", "/std:c++17"),
+        clangFlags = arrayOf("-std=c++2a", "-O3"),
+        winCompilerFlags = arrayOf("/O2", "/std:c++20"),
         winLinkerFlags = arrayOf("/DEBUG"),
     );
     override fun toString() = id
@@ -157,17 +157,62 @@ class SkikoProperties(private val myProject: Project) {
     val visualStudioBuildToolsDir: File?
         get() = System.getenv()["SKIKO_VSBT_PATH"]?.let { File(it) }?.takeIf { it.isDirectory }
 
+    /**
+     * Skia repository root directory for building Skia from source.
+     *
+     * Property naming conventions:
+     * - Gradle property: `-Pskia.repo.dir=...` (preferred)
+     * - Kotlin accessor: `skiaRepoDir`
+     * - Environment variable: `SKIA_REPO_DIR`
+     *
+     * Legacy `skia.pack.dir` and `SKIA_PACK_DIR` are still accepted to keep
+     * existing local workflows working while the standalone repo is retired.
+     *
+     * Usage: `-Pskia.repo.dir=/path/to/skia`
+     *
+     * Note: Must point to skia repository root containing tools/skia_release/.
+     */
+    // todo: make compatible with the configuration cache
+    val skiaRepoDir: File?
+        get() = (
+            System.getenv()["SKIA_REPO_DIR"]
+                ?: System.getenv()["SKIA_PACK_DIR"]
+                ?: System.getProperty("skia.repo.dir")
+                ?: System.getProperty("skia.pack.dir")
+                ?: myProject.findProperty("skia.repo.dir")?.toString()
+                ?: myProject.findProperty("skia.pack.dir")?.toString()
+            )?.let { skiaRepoDirProp ->
+                val file = File(skiaRepoDirProp)
+                if (!file.isDirectory) {
+                    throw GradleException("\"skia.repo.dir\" property was explicitly set to $skiaRepoDirProp which is not resolved as a directory")
+                }
+                file
+            }
+
+    /**
+     * Skia source directory for publishing.
+     *
+     * Property naming conventions:
+     * - Gradle property: `-Pskia.dir=...` (kebab-case, Gradle convention)
+     * - Kotlin accessor: `skiaDir` (camelCase, Kotlin convention)
+     * - Environment variable: `SKIA_DIR`
+     *
+     * Usage: `-Pskia.dir=/path/to/skia`
+     *
+     * Note: Must point to directory containing built Skia source code and headers.
+     * When using the integrated release scripts this is typically the same path as `skia.repo.dir`.
+     */
     // todo: make compatible with the configuration cache
     val skiaDir: File?
         get() = (System.getenv()["SKIA_DIR"] ?: System.getProperty("skia.dir") ?: myProject.findProperty("skia.dir")
             ?.toString())?.let { skiaDirProp ->
                 val file = File(skiaDirProp)
-                if (!file.isDirectory) throw (GradleException("\"skiko.skiaDir\" property was explicitly set to ${skiaDirProp} which is not resolved as a directory"))
+                if (!file.isDirectory) throw (GradleException("\"skia.dir\" property was explicitly set to ${skiaDirProp} which is not resolved as a directory"))
                 file
             }
 
     val composeRepoUrl: String
-        get() = System.getenv("COMPOSE_REPO_URL") ?: "https://maven.pkg.jetbrains.space/public/p/compose/dev"
+        get() = System.getenv("COMPOSE_REPO_URL") ?: "https://packages.jetbrains.team/maven/p/cmp/dev"
 
     val composeRepoUserName: String
         get() = System.getenv("COMPOSE_REPO_USERNAME") ?: ""
@@ -189,6 +234,40 @@ class SkikoProperties(private val myProject: Project) {
 
     val dependenciesDir: File
         get() = myProject.rootProject.projectDir.resolve("dependencies")
+
+    val skiaTarget: SkiaTarget
+        get() {
+            val targetString = System.getenv("SKIA_TARGET")
+                ?: myProject.findProperty("skia.target")?.toString()
+                ?: hostOs.id  // Default to current OS
+            return SkiaTarget.fromString(targetString)
+        }
+
+    val skiaVersionFromEnvOrProperties: String
+        get() {
+            // Environment variable takes precedence
+            System.getenv("SKIA_VERSION")?.let { return it }
+
+            // Fall back to gradle.properties
+            return myProject.property("dependencies.skia").toString()
+        }
+}
+
+object SkikoGradleProperties {
+    const val AWT_ENABLED = "skiko.awt.enabled"
+    const val WASM_ENABLED = "skiko.wasm.enabled"
+    const val ANDROID_ENABLED = "skiko.android.enabled"
+    const val NATIVE_ENABLED = "skiko.native.enabled"
+    const val NATIVE_IOS = "skiko.native.ios"
+    const val NATIVE_IOS_ARM64 = "skiko.native.ios.arm64.enabled"
+    const val NATIVE_IOS_SIMULATOR_ARM64 = "skiko.native.ios.simulatorArm64.enabled"
+    const val NATIVE_IOS_X64 = "skiko.native.ios.x64.enabled"
+    const val NATIVE_TVOS = "skiko.native.tvos"
+    const val NATIVE_TVOS_ARM64 = "skiko.native.tvos.arm64.enabled"
+    const val NATIVE_TVOS_SIMULATOR_ARM64 = "skiko.native.tvos.simulatorArm64.enabled"
+    const val NATIVE_TVOS_X64 = "skiko.native.tvos.x64.enabled"
+    const val NATIVE_MAC = "skiko.native.mac.enabled"
+    const val NATIVE_LINUX = "skiko.native.linux.enabled"
 }
 
 object SkikoArtifacts {
@@ -196,6 +275,7 @@ object SkikoArtifacts {
     // names are also used in samples, e.g. samples/SkijaInjectSample/build.gradle
     val commonArtifactId = "skiko"
     val jvmArtifactId = "skiko-awt"
+    val jvmRuntimeArtifactId = "skiko-awt-runtime"
     // an artifact (klib) for k/js targets
     val jsArtifactId = "skiko-js"
     // an artifact (klib) for k/wasm targets

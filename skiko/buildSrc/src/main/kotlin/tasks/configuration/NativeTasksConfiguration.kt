@@ -2,6 +2,7 @@ package tasks.configuration
 
 import Arch
 import CompileSkikoCppTask
+import PatchSkiaSymbolsTask
 import OS
 import SkiaBuildType
 import SkikoProjectContext
@@ -116,7 +117,9 @@ fun SkikoProjectContext.compileNativeBridgesTask(
                 ))
             }
             OS.MacOS -> {
+                compiler.set(project.appleToolchainExecutableOrDefault("clang++", compiler.get()))
                 flags.set(listOf(
+                    *project.appleMacOsSdkFlags().toTypedArray(),
                     *buildType.clangFlags,
                     *skiaPreprocessorFlags(OS.MacOS, buildType),
                     when(arch) {
@@ -182,7 +185,7 @@ fun configureCinterop(
     }
     target.compilations.getByName("main") {
         cinterops.create(cinteropName).apply {
-            defFileProperty.set(writeCInteropDef.map { it.outputFile.get().asFile })
+            definitionFile.set(writeCInteropDef.flatMap { it.outputFile })
         }
     }
 }
@@ -193,6 +196,7 @@ fun skiaStaticLibraries(skiaDir: String, targetString: String, buildType: SkiaBu
         "libskresources.a",
         "libskparagraph.a",
         "libskia.a",
+        "libskia_ganesh_ext.a",
         "libicu.a",
         "libjsonreader.a",
         "libskottie.a",
@@ -229,7 +233,22 @@ fun SkikoProjectContext.configureNativeTarget(os: OS, arch: Arch, target: Kotlin
 
     val bridgesLibrary = layout.buildDirectory.file("nativeBridges/static/$targetString/skiko-native-bridges-$targetString.a")
     val bridgesLibraryPath = bridgesLibrary.get().asFile.absolutePath
-    val allLibraries = skiaStaticLibraries(skiaDir, targetString, buildType) + bridgesLibraryPath
+
+    // For iOS/tvOS we patch every library so that public Skia symbols are
+    // renamed, preventing conflicts when multiple Skia copies are present in
+    // the same app binary. Many C++ Itanium-mangled symbols are rewritten by
+    // inserting the `skiko` namespace into the mangled name; C symbols and
+    // unsupported shapes fall back to a "_skiko" suffix.
+    val requiresSymbolPatching = os == OS.IOS || os == OS.TVOS
+    val patchedLibsDir = layout.buildDirectory.dir("nativeBridges/patched/$targetString").get().asFile
+
+    val allLibraries = if (requiresSymbolPatching) {
+        skiaStaticLibraries(skiaDir, targetString, buildType).map { lib ->
+            "${patchedLibsDir.absolutePath}/${File(lib).name}"
+        } + "${patchedLibsDir.absolutePath}/skiko-native-bridges-$targetString.a"
+    } else {
+        skiaStaticLibraries(skiaDir, targetString, buildType) + bridgesLibraryPath
+    }
 
     val skiaBinDir = "$skiaDir/out/${buildType.id}-$targetString"
     val linkerFlags = when (os) {
@@ -254,6 +273,7 @@ fun SkikoProjectContext.configureNativeTarget(os: OS, arch: Arch, target: Kotlin
         }
         OS.Linux -> {
             val options = mutableListOf(
+                "-L/usr/lib64",
                 "-L/usr/lib/${if (arch == Arch.Arm64) "aarch64" else "x86_64"}-linux-gnu",
                 "-lfontconfig",
                 "-lGL",
@@ -264,8 +284,12 @@ fun SkikoProjectContext.configureNativeTarget(os: OS, arch: Arch, target: Kotlin
                 "$skiaBinDir/libskshaper.a",
                 "$skiaBinDir/libskunicode_core.a",
                 "$skiaBinDir/libskunicode_icu.a",
-                "$skiaBinDir/libskia.a"
+                "$skiaBinDir/libskia.a",
+                "$skiaBinDir/libskia_ganesh_ext.a"
             )
+            if (arch == Arch.Arm64) {
+                options.add("-lEGL")
+            }
             // When cross-compiling for ARM64 from x64, use the ARM toolchain sysroot
             if (arch == Arch.Arm64 && hostArch != Arch.Arm64) {
                 // ARM GNU toolchain sysroot paths
@@ -290,9 +314,13 @@ fun SkikoProjectContext.configureNativeTarget(os: OS, arch: Arch, target: Kotlin
     target.binaries.all {
         freeCompilerArgs += allLibraries.map { listOf("-include-binary", it) }.flatten() + linkerFlags
     }
+
+
     target.compilations.all {
-        kotlinOptions {
-            freeCompilerArgs += allLibraries.map { listOf("-include-binary", it) }.flatten() + linkerFlags
+        compilerOptions.configure {
+            freeCompilerArgs.addAll(
+                allLibraries.flatMap { listOf("-include-binary", it) } + linkerFlags
+            )
         }
     }
 
@@ -325,9 +353,24 @@ fun SkikoProjectContext.configureNativeTarget(os: OS, arch: Arch, target: Kotlin
         file(outDir).mkdirs()
         outputs.dir(outDir)
     }
+
+    // For iOS/tvOS: patch all Skia + skiko-bridge symbols after linking.
+    val compilationDependency = if (requiresSymbolPatching) {
+        val patchActionName = "patchSkikoSymbols".withSuffix(isUikitSim = isUikitSim)
+        project.registerSkikoTask<PatchSkiaSymbolsTask>(patchActionName, os, arch) {
+            dependsOn(unzipper)
+            dependsOn(linkTask)
+            skiaLibs.set(skiaStaticLibraries(skiaDir, targetString, buildType).map { File(it) })
+            skikoBridge.set(File(bridgesLibraryPath))
+            outputDir.set(patchedLibsDir)
+        }
+    } else {
+        linkTask
+    }
+
     target.compilations.all {
         compileTaskProvider.configure {
-            dependsOn(linkTask)
+            dependsOn(compilationDependency)
         }
     }
 }
@@ -339,7 +382,7 @@ fun KotlinMultiplatformExtension.configureIOSTestsWithMetal(project: Project) {
         if (targets.names.contains(target)) {
             val testBinary = targets.getByName<KotlinNativeTarget>(target).binaries.getTest("DEBUG")
             project.tasks.register(target + "TestWithMetal") {
-                dependsOn(testBinary.linkTask)
+                dependsOn(testBinary.linkTaskProvider)
                 doLast {
                     val simulatorIdPropertyKey = "skiko.iosSimulatorUUID"
                     val simulatorId = project.findProperty(simulatorIdPropertyKey)?.toString()

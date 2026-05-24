@@ -54,7 +54,7 @@ internal abstract class AWTRedrawer(
         layer.update(nanoTime)
     }
 
-    protected inline fun inDrawScope(body: () -> Unit) {
+    protected inline fun inDrawScope(body: LayerDrawScope.() -> Unit) {
         requireNotNull(deviceAnalytics) { "deviceAnalytics is not null. Call onDeviceChosen after choosing the drawing device" }
         if (!isDisposed) {
             val isFirstFrame = !isFirstFrameRendered
@@ -74,4 +74,6 @@ internal abstract class AWTRedrawer(
     protected fun checkDisposed() {
         check(!isDisposed) { "${this.javaClass.simpleName} is disposed" }
     }
+
+    override fun isTransparentBackgroundSupported() = defaultIsTransparentBackgroundSupported(layer)
 }

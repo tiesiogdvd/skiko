@@ -3,11 +3,12 @@ package org.jetbrains.skia
 import org.jetbrains.skia.tests.assertCloseEnough
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class PictureTest {
     @Test
     fun canMakeShader() {
-        val pic = Picture.makePlaceholder(Rect(0.0f, 0.0f, 32.0f, 32.0f))
+        val pic = Picture.makePlaceholder(0.0f, 0.0f, 32.0f, 32.0f)
         val localMatrix = Matrix33(1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f)
         val tile = Rect(0.0f, 0.0f, 16.0f, 16.0f)
         pic.makeShader(FilterTileMode.MIRROR, FilterTileMode.MIRROR, FilterMode.LINEAR)
@@ -31,6 +32,8 @@ class PictureTest {
         val canvas = recorder.beginRecording(size)
         canvas.drawRect(Rect(10.0f, 10.0f, 20.0f, 20.0f), Paint().apply { color = Color.RED })
         val pic = recorder.finishRecordingAsPicture()
+        assertTrue(pic.approximateBytesUsed > 0)
+        assertTrue(pic.approximateOpCount > 0)
 
         val surface = Surface.makeRasterN32Premul(32, 32)
         pic.playback(surface.canvas)

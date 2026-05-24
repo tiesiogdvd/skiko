@@ -2,7 +2,6 @@ package org.jetbrains.skia
 
 import org.jetbrains.skiko.tests.runTest
 import kotlin.test.Test
-import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class PathUtilsTest {
@@ -14,7 +13,7 @@ class PathUtilsTest {
             strokeWidth = 10f
             mode = PaintMode.STROKE
         }
-        val path = Path().lineTo(40f, 40f)
+        val path = PathBuilder().lineTo(40f, 40f).detach()
 
         val fillPath = PathUtils.fillPathWithPaint(path, paint)
 
@@ -30,10 +29,14 @@ class PathUtilsTest {
             strokeWidth = 10f
             mode = PaintMode.STROKE
         }
-        val path = Path().arcTo(Rect(0f, 0f, 40f, 40f), 0f, 90f, false)
+        val path = PathBuilder().arcTo(0f, 0f, 40f, 40f, 0f, 90f, false).detach()
 
-        val fillPath1 = PathUtils.fillPathWithPaint(path, paint,null, 1f)
-        val fillPath001 = PathUtils.fillPathWithPaint(path, paint,null, 0.01f)
+        val fillPath1Builder = PathBuilder()
+        val fillPath001Builder = PathBuilder()
+        assertTrue(PathUtils.fillPathWithPaint(path, paint, fillPath1Builder, null, 1f))
+        assertTrue(PathUtils.fillPathWithPaint(path, paint, fillPath001Builder, null, 0.01f))
+        val fillPath1 = fillPath1Builder.detach()
+        val fillPath001 = fillPath001Builder.detach()
 
         // assert 1f scale has higher precision (more points) than 0.01f
         assertTrue(fillPath1.pointsCount > fillPath001.pointsCount)

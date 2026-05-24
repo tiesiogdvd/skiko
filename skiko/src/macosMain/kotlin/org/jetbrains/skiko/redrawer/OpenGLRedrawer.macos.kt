@@ -78,6 +78,8 @@ internal class MacOsOpenGLRedrawer(
         glLayer.setNeedsDisplay()
         skiaLayer.nsView.setNeedsDisplay(true)
     }
+
+    override fun isTransparentBackgroundSupported() = defaultIsTransparentBackgroundSupported(skiaLayer)
 }
 
 internal class MacosGLLayer : CAOpenGLLayer {
@@ -131,7 +133,9 @@ internal class MacosGLLayer : CAOpenGLLayer {
         CGLSetCurrentContext(ctx)
         try {
             skiaLayer.update(currentNanoTime())
-            contextHandler.draw()
+            skiaLayer.inDrawScope {
+                contextHandler.draw()
+            }
         } catch (e: Throwable) {
             e.printStackTrace()
             throw e

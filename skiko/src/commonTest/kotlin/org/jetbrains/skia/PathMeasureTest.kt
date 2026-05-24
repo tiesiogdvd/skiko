@@ -2,6 +2,7 @@ package org.jetbrains.skia
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import org.jetbrains.skia.tests.assertCloseEnough
 import org.jetbrains.skia.impl.use
 import org.jetbrains.skiko.tests.runTest
@@ -11,7 +12,7 @@ class PathMeasureTest {
 
     @Test
     fun getRSXformTest() = runTest {
-        Path().moveTo(0f, 0f).lineTo(40f, 0f).moveTo(0f, 40f).lineTo(10f, 50f).use { path ->
+        PathBuilder().moveTo(0f, 0f).lineTo(40f, 0f).moveTo(0f, 40f).lineTo(10f, 50f).detach().use { path ->
             PathMeasure(path, false).use { measure ->
                 assertEquals(RSXform(1.0f, 0f, 0.5f, 0f), measure.getRSXform(0.5f))
             }
@@ -20,7 +21,7 @@ class PathMeasureTest {
 
     @Test
     fun getTangent() = runTest {
-        Path().moveTo(0f, 0f).lineTo(20f, 0f).moveTo(0f, 40f).lineTo(30f, 50f).use { path ->
+        PathBuilder().moveTo(0f, 0f).lineTo(20f, 0f).moveTo(0f, 40f).lineTo(30f, 50f).detach().use { path ->
             PathMeasure(path, false).use { measure ->
                 assertEquals(Point(1f, 0f), measure.getTangent(2f))
             }
@@ -29,9 +30,22 @@ class PathMeasureTest {
 
     @Test
     fun getPosition() = runTest {
-        Path().moveTo(0f, 10f).lineTo(20f, 0f).moveTo(0f, 40f).lineTo(30f, 50f).use { path ->
+        PathBuilder().moveTo(0f, 10f).lineTo(20f, 0f).moveTo(0f, 40f).lineTo(30f, 50f).detach().use { path ->
             PathMeasure(path, false).use { measure ->
                 assertCloseEnough(Point(0.89442724f, 9.552787f), measure.getPosition(1f)!!)
+            }
+        }
+    }
+
+    @Test
+    fun getSegmentAppendsToPathBuilder() = runTest {
+        PathBuilder().moveTo(0f, 0f).lineTo(40f, 0f).detach().use { path ->
+            PathMeasure(path, false).use { measure ->
+                val builder = PathBuilder().moveTo(10f, 10f)
+                assertTrue(measure.getSegment(5f, 20f, builder, true))
+                val segment = builder.detach()
+                assertTrue(segment.pointsCount > 0)
+                assertTrue(segment.verbsCount > 0)
             }
         }
     }
@@ -40,9 +54,9 @@ class PathMeasureTest {
     @Test
     @Ignore
     fun pathMeasureTest() = runTest {
-        Path().moveTo(0f, 0f).lineTo(40f, 0f).moveTo(0f, 40f).lineTo(10f, 50f).use { path ->
+        PathBuilder().moveTo(0f, 0f).lineTo(40f, 0f).moveTo(0f, 40f).lineTo(10f, 50f).detach().use { path ->
             PathMeasure(path, false).use { measure ->
-                Path().lineTo(10f, 10f).use { path2 ->
+                PathBuilder().lineTo(10f, 10f).detach().use { path2 ->
                     assertEquals(40f, measure.length)
                     assertCloseEnough(Point(0f, 0f), measure.getPosition(0f)!!)
                     assertCloseEnough(Point(1f, 0f), measure.getTangent(0f)!!)

@@ -5,6 +5,7 @@ import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import org.jetbrains.skia.*
+import org.jetbrains.skiko.internal.fastForEach
 import org.jetbrains.skiko.redrawer.Redrawer
 import org.jetbrains.skiko.redrawer.RedrawerManager
 import java.awt.Color
@@ -17,22 +18,22 @@ import java.awt.im.InputMethodRequests
 import java.beans.PropertyChangeListener
 import java.util.concurrent.CancellationException
 import javax.accessibility.Accessible
+import javax.accessibility.AccessibleContext
+import javax.accessibility.AccessibleRole
 import javax.swing.JComponent
-import javax.swing.JPanel
 import javax.swing.SwingUtilities
 import javax.swing.SwingUtilities.isEventDispatchThread
-import javax.swing.UIManager
 import javax.swing.event.AncestorEvent
 import javax.swing.event.AncestorListener
 import kotlin.math.floor
 
 actual open class SkiaLayer internal constructor(
-    externalAccessibleFactory: ((Component) -> Accessible)? = null,
+    accessibleContextProvider: ((Component) -> AccessibleContext)? = null,
     val properties: SkiaLayerProperties,
     private val renderFactory: RenderFactory = RenderFactory.Default,
     private val analytics: SkiaLayerAnalytics = SkiaLayerAnalytics.Empty,
     actual val pixelGeometry: PixelGeometry = PixelGeometry.UNKNOWN,
-) : JPanel() {
+) : JComponent(), Accessible {
 
     internal companion object {
         init {
@@ -45,22 +46,10 @@ actual open class SkiaLayer internal constructor(
         ContentScale,
     }
 
-    private var _transparency: Boolean = false
-    actual var transparency: Boolean
-        get() = _transparency
-        set(value) {
-            _transparency = value
-            if (!value) {
-                background = UIManager.getColor("Panel.background")
-            } else {
-                background = Color(0, 0, 0, 0)
-            }
-        }
-
     internal val backedLayer: HardwareLayer
 
     constructor(
-        externalAccessibleFactory: ((Component) -> Accessible)? = null,
+        accessibleContextProvider: ((Component) -> AccessibleContext)? = null,
         isVsyncEnabled: Boolean = SkikoProperties.vsyncEnabled,
         isVsyncFramelimitFallbackEnabled: Boolean = SkikoProperties.vsyncFramelimitFallbackEnabled,
         frameBuffering: FrameBuffering = SkikoProperties.frameBuffering,
@@ -68,7 +57,7 @@ actual open class SkiaLayer internal constructor(
         analytics: SkiaLayerAnalytics = SkiaLayerAnalytics.Empty,
         pixelGeometry: PixelGeometry = PixelGeometry.UNKNOWN,
     ) : this(
-        externalAccessibleFactory,
+        accessibleContextProvider,
         SkiaLayerProperties(
             isVsyncEnabled,
             isVsyncFramelimitFallbackEnabled,
@@ -81,12 +70,12 @@ actual open class SkiaLayer internal constructor(
     )
 
     constructor(
-        externalAccessibleFactory: ((Component) -> Accessible)? = null,
+        accessibleContextProvider: ((Component) -> AccessibleContext)? = null,
         properties: SkiaLayerProperties,
         analytics: SkiaLayerAnalytics = SkiaLayerAnalytics.Empty,
         pixelGeometry: PixelGeometry = PixelGeometry.UNKNOWN,
     ) : this(
-        externalAccessibleFactory,
+        accessibleContextProvider,
         properties,
         RenderFactory.Default,
         analytics,
@@ -100,9 +89,8 @@ actual open class SkiaLayer internal constructor(
     private var latestReceivedGraphicsContextScaleTransform: AffineTransform? = null
 
     init {
-        isOpaque = false
         layout = null
-        backedLayer = object : HardwareLayer(externalAccessibleFactory) {
+        backedLayer = object : HardwareLayer(accessibleContextProvider) {
             override fun paint(g: Graphics) {
                 Logger.debug { "Paint called on HardwareLayer $this" }
                 checkContentScale()
@@ -204,6 +192,41 @@ actual open class SkiaLayer internal constructor(
                 }
             }
         }
+    }
+
+    private var _transparency: Boolean = false
+
+    /**
+     * Whether transparency is enabled.
+     */
+    var transparency: Boolean
+        get() = _transparency
+        set(value) {
+            configureBackground(value, _background)
+        }
+
+    // This is needed because after setBackground(null), getBackground() will not return null, but an ancestor's
+    // non-null background. But we need to preserve the null value when modifying `transparency`.
+    private var _background: Color? = null
+
+    override fun setBackground(bg: Color?) {
+        configureBackground(_transparency, bg)
+    }
+
+    private fun configureBackground(transparency: Boolean, bg: Color?) {
+        _transparency = transparency
+        _background = bg
+
+        // Note that SkiaLayer itself doesn't draw its background; only backedLayer does, as it's heavyweight.
+        // We set the property just so it can be read back correctly, and also for the case when bg==null, as that
+        // indicates the parent's background should be used (getBackground() calls parent.getBackground() if own
+        // background is null).
+        super.setBackground(bg)
+
+        // To enable transparency, the backedLayer's background must be transparent (also the window background).
+        backedLayer.background = if (transparency) Color(0, 0, 0, 0) else bg
+
+        needRender()
     }
 
     // Override to make final, because it's called it in the init block
@@ -309,6 +332,9 @@ actual open class SkiaLayer internal constructor(
         jComponent.add(this)
     }
 
+    /**
+     * A list of rectangles to cut out from the rendered content; No content will be drawn inside them.
+     */
     val clipComponents = mutableListOf<ClipRectangle>()
 
     @Volatile
@@ -359,7 +385,9 @@ actual open class SkiaLayer internal constructor(
 
     private fun notifyChange(kind: PropertyKind) {
         stateChangeListeners[kind]?.let { handlers ->
-            handlers.forEach { it(this) }
+            handlers.fastForEach { handler ->
+                handler.invoke(this)
+            }
         }
     }
 
@@ -574,21 +602,31 @@ actual open class SkiaLayer internal constructor(
         // If this approach will be changed, create an issue in https://youtrack.jetbrains.com/issues/CMP for changing it in
         // https://github.com/JetBrains/compose-multiplatform/blob/e4e2d329709cded91a09cc612d4defbce37aad96/benchmarks/multiplatform/benchmarks/src/commonMain/kotlin/MeasureComposable.kt#L151 as well
 
-        val pictureWidth = (backedLayer.width * contentScale).toInt().coerceAtLeast(0)
-        val pictureHeight = (backedLayer.height * contentScale).toInt().coerceAtLeast(0)
+        val contentScale = this.contentScale
+        val pictureWidth = (backedLayer.width * contentScale).coerceAtLeast(0f)
+        val pictureHeight = (backedLayer.height * contentScale).coerceAtLeast(0f)
+        val intWidth = pictureWidth.toInt()
+        val intHeight = pictureHeight.toInt()
 
-        val bounds = Rect.makeWH(pictureWidth.toFloat(), pictureHeight.toFloat())
         val pictureRecorder = pictureRecorder!!
-        val canvas = pictureRecorder.beginRecording(bounds)
+        val canvas = pictureRecorder.beginRecording(0f, 0f, pictureWidth, pictureHeight).apply {
+            for (component in clipComponents) {
+                cutoutFromClip(component, contentScale)
+            }
 
-        // clipping
-        for (component in clipComponents) {
-            canvas.clipRectBy(component, contentScale)
+            val layerBg = background.rgb  // Will return an ancestor's non-null background after setBackground(null).
+            clear(
+                if (transparency && (redrawer?.isTransparentBackgroundSupported() == true)) {
+                    layerBg
+                } else {
+                    layerBg or 0xFF000000.toInt()
+                }
+            )
         }
 
         try {
             isRendering = true
-            renderDelegate?.onRender(canvas, pictureWidth, pictureHeight, nanoTime)
+            renderDelegate?.onRender(canvas, intWidth, intHeight, nanoTime)
         } finally {
             isRendering = false
         }
@@ -599,7 +637,7 @@ actual open class SkiaLayer internal constructor(
             synchronized(pictureLock) {
                 picture?.instance?.close()
                 val picture = pictureRecorder.finishRecordingAsPicture()
-                this.picture = PictureHolder(picture, pictureWidth, pictureHeight)
+                this.picture = PictureHolder(picture, intWidth, intHeight)
             }
         }
     }
@@ -607,13 +645,22 @@ actual open class SkiaLayer internal constructor(
     @Suppress("LeakingThis")
     private val fpsCounter = defaultFPSCounter(this)
 
-    internal inline fun inDrawScope(body: () -> Unit) {
+    private fun createDrawScope() = LayerDrawScope(
+        pixelGeometry = pixelGeometry,
+        layerWidth = width,
+        layerHeight = height,
+        scale = contentScale
+    )
+
+    internal inline fun inDrawScope(body: LayerDrawScope.() -> Unit) {
         check(isEventDispatchThread()) { "Method should be called from AWT event dispatch thread" }
         check(!isDisposed) { "SkiaLayer is disposed" }
         try {
             fpsCounter?.tick()
-            body()
-        } catch (e: CancellationException) {
+            with(createDrawScope()) {
+                body()
+            }
+        } catch (_: CancellationException) {
             // ignore
         } catch (e: RenderException) {
             if (!isDisposed) {
@@ -659,13 +706,23 @@ actual open class SkiaLayer internal constructor(
         }
     }
 
-    fun requestNativeFocusOnAccessible(accessible: Accessible?) {
-        backedLayer.requestNativeFocusOnAccessible(accessible)
+    override fun getAccessibleContext(): AccessibleContext {
+        if (accessibleContext == null) {
+            accessibleContext = AccessibleSkiaLayer()
+        }
+        return accessibleContext
+    }
+
+    @Suppress("RedundantInnerClassModifier")
+    protected inner class AccessibleSkiaLayer : AccessibleJComponent() {
+        override fun getAccessibleRole(): AccessibleRole {
+            return AccessibleRole.PANEL
+        }
     }
 }
 
 /**
- * Disable showing window title bar.
+ * Disable showing the window title bar.
  */
 fun SkiaLayer.disableTitleBar(customHeaderHeight: Float) {
     backedLayer.disableTitleBar(customHeaderHeight)
@@ -690,19 +747,6 @@ internal fun defaultFPSCounter(
         showLongFrames = fpsLongFramesShow,
         getLongFrameMillis = { fpsLongFramesMillis ?: (1.5 * 1000 / refreshRate) },
         logOnTick = true
-    )
-}
-
-internal fun Canvas.clipRectBy(rectangle: ClipRectangle, scale: Float) {
-    clipRect(
-        Rect.makeLTRB(
-            rectangle.x * scale,
-            rectangle.y * scale,
-            (rectangle.x + rectangle.width) * scale,
-            (rectangle.y + rectangle.height) * scale
-        ),
-        ClipMode.DIFFERENCE,
-        true
     )
 }
 

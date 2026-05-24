@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalKotlinGradlePluginApi::class)
+@file:OptIn(ExperimentalKotlinGradlePluginApi::class, ExperimentalWasmDsl::class)
 
 import com.android.build.gradle.LibraryExtension
 import com.android.build.gradle.LibraryPlugin
@@ -8,10 +8,11 @@ import org.jetbrains.compose.internal.publishing.MavenCentralProperties
 import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.dsl.KotlinJsCompile
-import org.jetbrains.kotlin.gradle.targets.js.dsl.ExperimentalWasmDsl
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask
 import org.jetbrains.kotlin.gradle.tasks.KotlinNativeCompile
+import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 import tasks.configuration.*
+import org.jetbrains.kotlin.gradle.dsl.KotlinVersion
 
 plugins {
     kotlin("multiplatform")
@@ -53,11 +54,18 @@ allprojects {
 }
 
 repositories {
-    mavenCentral()
+    mavenCentral {
+        url = uri("https://cache-redirector.jetbrains.com/maven-central")
+    }
     google()
 }
 
 kotlin {
+    compilerOptions {
+        languageVersion.set(KotlinVersion.KOTLIN_2_2)
+        apiVersion.set(KotlinVersion.KOTLIN_2_2)
+    }
+
     applyHierarchyTemplate(skikoSourceSetHierarchyTemplate)
     skikoProjectContext.declareSkiaTasks()
 
@@ -65,7 +73,7 @@ kotlin {
         jvm("awt") {
             compilations.all {
                 compileTaskProvider.configure {
-                    compilerOptions.jvmTarget.set(JvmTarget.JVM_1_8)
+                    compilerOptions.jvmTarget.set(JvmTarget.JVM_11)
                 }
             }
             generateVersion(targetOs, targetArch, skiko)
@@ -78,7 +86,7 @@ kotlin {
 
             compilations.all {
                 compileTaskProvider.configure {
-                    compilerOptions.jvmTarget.set(JvmTarget.JVM_1_8)
+                    compilerOptions.jvmTarget.set(JvmTarget.JVM_11)
                 }
             }
 
@@ -96,7 +104,7 @@ kotlin {
         skikoProjectContext.declareWasmTasks()
 
         js {
-            moduleName = "skiko-kjs" // override the name to avoid name collision with a different skiko.js file
+            outputModuleName.set("skiko-kjs") // override the name to avoid name collision with a different skiko.js file
             browser {
                 testTask {
                     useKarma {
@@ -120,7 +128,7 @@ kotlin {
 
         @OptIn(ExperimentalWasmDsl::class)
         wasmJs {
-            moduleName = "skiko-kjs-wasm" // override the name to avoid name collision with a different skiko.js file
+            outputModuleName.set("skiko-kjs-wasm") // override the name to avoid name collision with a different skiko.js file
             browser {
                 testTask {
                     useKarma {
@@ -181,6 +189,10 @@ kotlin {
     skikoProjectContext.jvmMainSourceSet?.dependencies {
         implementation(kotlin("stdlib"))
         implementation(libs.coroutines.core.jvm)
+    }
+
+    skikoProjectContext.webMainSourceSet?.dependencies {
+        implementation(libs.kotlinx.browser)
     }
 
     skikoProjectContext.awtMainSourceSet?.dependencies {
@@ -246,8 +258,8 @@ if (supportAndroid) {
         defaultConfig.targetSdk = 24
         defaultConfig.javaCompileOptions
 
-        compileOptions.sourceCompatibility = JavaVersion.VERSION_1_8
-        compileOptions.targetCompatibility = JavaVersion.VERSION_1_8
+        compileOptions.sourceCompatibility = JavaVersion.VERSION_11
+        compileOptions.targetCompatibility = JavaVersion.VERSION_11
 
         sourceSets.named("main") {
             java.srcDirs("src/androidMain/java")
@@ -340,8 +352,8 @@ tasks.withType<AbstractTestTask> {
 
 tasks.withType<JavaCompile> {
     // Workaround to configure Java sources on Android (src/androidMain/java)
-    targetCompatibility = "1.8"
-    sourceCompatibility = "1.8"
+    targetCompatibility = JavaVersion.VERSION_11.toString()
+    sourceCompatibility = JavaVersion.VERSION_11.toString()
 }
 
 project.tasks.withType<KotlinJsCompile>().configureEach {
@@ -359,9 +371,36 @@ skikoProjectContext.additionalRuntimeLibraries.forEach {
     it.registerRuntimePublishTaskDependency(listOf("MavenLocal", "ComposeRepoRepository"))
 }
 
+// Local Skia build tasks
+tasks.register<BuildLocalSkiaTask>("prepareLocalSkiaBuild") {
+    group = "skia"
+    description = "Build Skia binaries locally (without publishing Skiko)"
+
+    skiaVersion.set(provider { skiko.skiaVersionFromEnvOrProperties })
+    skiaTarget.set(provider { skiko.skiaTarget })
+    buildType.set(skiko.buildType)
+
+    val skiaRepoDir = skiko.skiaRepoDir
+    if (skiaRepoDir != null) {
+        this.skiaRepoDir.set(skiaRepoDir)
+    } else {
+        this.skiaRepoDir.set(project.file("skia"))
+    }
+
+    skikoTargetFlags.set(provider {
+        skiko.skiaTarget.getGradleFlags(skiko.targetArch)
+    })
+}
+
+tasks.register("printSkiaVersion") {
+    group = "skia"
+    description = "Print resolved Skia version"
+    doLast {
+        println(skiko.skiaVersionFromEnvOrProperties)
+    }
+}
+
 tasks.withType<KotlinNativeCompile>().configureEach {
-    // https://youtrack.jetbrains.com/issue/KT-56583
-    compilerOptions.freeCompilerArgs.add("-XXLanguage:+ImplicitSignedToUnsignedIntegerConversion")
     compilerOptions.freeCompilerArgs.add("-opt-in=kotlinx.cinterop.ExperimentalForeignApi")
 }
 

@@ -1,7 +1,9 @@
 pluginManagement {
     repositories {
         mavenLocal()
-        mavenCentral()
+        mavenCentral {
+            url = uri("https://cache-redirector.jetbrains.com/maven-central")
+        }
         gradlePluginPortal()
         maven {
             url = uri("https://dl.bintray.com/kotlin/kotlin-eap")
@@ -19,8 +21,11 @@ dependencyResolutionManagement {
     versionCatalogs {
         create("libs") {
             version("skiko", providers.gradleProperty("skiko.version").get())
+            version("kotlinxBrowser", "0.5.0")
+
             library("skiko", "org.jetbrains.skiko", "skiko").versionRef("skiko")
             library("skiko-wasm-runtime", "org.jetbrains.skiko", "skiko-js-wasm-runtime").versionRef("skiko")
+            library("browser", "org.jetbrains.kotlinx", "kotlinx-browser").versionRef("kotlinxBrowser")
         }
     }
 }

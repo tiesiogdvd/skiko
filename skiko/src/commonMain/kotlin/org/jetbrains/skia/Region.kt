@@ -2,7 +2,12 @@ package org.jetbrains.skia
 
 import org.jetbrains.skia.impl.*
 import org.jetbrains.skia.impl.Library.Companion.staticLoad
+import org.jetbrains.skiko.internal.unpackTo
 
+/**
+ * Describes a set of pixels as either one integer rectangle or a run-length encoded
+ * set of rectangles.
+ */
 class Region : Managed(Region_nMake(), _FinalizerHolder.PTR) {
     companion object {
         init {
@@ -10,24 +15,47 @@ class Region : Managed(Region_nMake(), _FinalizerHolder.PTR) {
         }
     }
 
+    /** Logical operations used to combine regions. */
     enum class Op {
-        DIFFERENCE, INTERSECT, UNION, XOR, REVERSE_DIFFERENCE, REPLACE;
+        /** target minus operand */
+        DIFFERENCE,
+
+        /** target intersected with operand */
+        INTERSECT,
+
+        /** target unioned with operand */
+        UNION,
+
+        /** target exclusive-or with operand */
+        XOR,
+
+        /** operand minus target */
+        REVERSE_DIFFERENCE,
+
+        /** replace target with operand */
+        REPLACE;
 
         companion object {
-            internal val _values = values()
+            internal val _values = Op.entries.toTypedArray()
         }
     }
 
-    fun set(r: Region?): Boolean {
+    /**
+     * Sets this region to [src].
+     *
+     * @return true if the resulting region is not empty
+     */
+    fun set(src: Region): Boolean {
         return try {
             Stats.onNativeCall()
-            Region_nSet(_ptr, getPtr(r))
+            Region_nSet(_ptr, getPtr(src))
         } finally {
             reachabilityBarrier(this)
-            reachabilityBarrier(r)
+            reachabilityBarrier(src)
         }
     }
 
+    /** Returns true if this region is empty. */
     val isEmpty: Boolean
         get() = try {
             Stats.onNativeCall()
@@ -35,6 +63,8 @@ class Region : Managed(Region_nMake(), _FinalizerHolder.PTR) {
         } finally {
             reachabilityBarrier(this)
         }
+
+    /** Returns true if this region is one non-empty rectangle. */
     val isRect: Boolean
         get() = try {
             Stats.onNativeCall()
@@ -42,6 +72,8 @@ class Region : Managed(Region_nMake(), _FinalizerHolder.PTR) {
         } finally {
             reachabilityBarrier(this)
         }
+
+    /** Returns true if this region is represented by more than one rectangle. */
     val isComplex: Boolean
         get() = try {
             Stats.onNativeCall()
@@ -49,6 +81,8 @@ class Region : Managed(Region_nMake(), _FinalizerHolder.PTR) {
         } finally {
             reachabilityBarrier(this)
         }
+
+    /** Returns the union bounds of all rectangles in this region. */
     val bounds: IRect
         get() = try {
             Stats.onNativeCall()
@@ -60,6 +94,10 @@ class Region : Managed(Region_nMake(), _FinalizerHolder.PTR) {
             reachabilityBarrier(this)
         }
 
+    /**
+     * Returns a value that increases with the number of elements in the region.
+     * Returns 0 for empty, 1 for a single rectangle, and larger values for complex regions.
+     */
     fun computeRegionComplexity(): Int {
         return try {
             Stats.onNativeCall()
@@ -69,19 +107,36 @@ class Region : Managed(Region_nMake(), _FinalizerHolder.PTR) {
         }
     }
 
-    fun getBoundaryPath(p: Path?): Boolean {
+    /**
+     * Appends the boundary outline of this region into [pathBuilder].
+     *
+     * @return true if this region is not empty and the builder changed
+     */
+    fun addBoundaryPath(pathBuilder: PathBuilder): Boolean {
         return try {
             Stats.onNativeCall()
-            Region_nGetBoundaryPath(
-                _ptr,
-                getPtr(p)
-            )
+            Region_nAddBoundaryPath(_ptr, getPtr(pathBuilder))
         } finally {
             reachabilityBarrier(this)
-            reachabilityBarrier(p)
+            reachabilityBarrier(pathBuilder)
         }
     }
 
+    /** Returns the boundary of this region as a new immutable [Path]. */
+    fun getBoundaryPath(): Path {
+        return try {
+            Stats.onNativeCall()
+            Path(Region_nGetBoundaryPath(_ptr))
+        } finally {
+            reachabilityBarrier(this)
+        }
+    }
+
+    /**
+     * Sets this region to empty.
+     *
+     * @return always false
+     */
     fun setEmpty(): Boolean {
         return try {
             Stats.onNativeCall()
@@ -91,23 +146,36 @@ class Region : Managed(Region_nMake(), _FinalizerHolder.PTR) {
         }
     }
 
+    /** Sets this region to [rect]. Returns true if [rect] is not empty. */
     fun setRect(rect: IRect): Boolean {
+        return setRect(rect.left, rect.top, rect.right, rect.bottom)
+    }
+
+    /** Sets this region to [left], [top], [right], [bottom]. */
+    fun setRect(left: Int, top: Int, right: Int, bottom: Int): Boolean {
         return try {
             Stats.onNativeCall()
-            Region_nSetRect(_ptr, rect.left, rect.top, rect.right, rect.bottom)
+            Region_nSetRect(_ptr, left, top, right, bottom)
         } finally {
             reachabilityBarrier(this)
         }
     }
 
+    /**
+     * Sets this region to a union of [rects].
+     *
+     * @return true if the resulting region is not empty
+     */
     fun setRects(rects: Array<IRect>): Boolean {
         return try {
             val arr = IntArray(rects.size * 4)
-            for (i in rects.indices) {
-                arr[i * 4] = rects[i].left
-                arr[i * 4 + 1] = rects[i].top
-                arr[i * 4 + 2] = rects[i].right
-                arr[i * 4 + 3] = rects[i].bottom
+            rects.unpackTo(arr) { rect, destination, i ->
+                destination[i] = rect.left
+                destination[i + 1] = rect.top
+                destination[i + 2] = rect.right
+                destination[i + 3] = rect.bottom
+                //Stepping 4 places for the next rect
+                i + 4
             }
             Stats.onNativeCall()
             interopScope {
@@ -118,24 +186,30 @@ class Region : Managed(Region_nMake(), _FinalizerHolder.PTR) {
         }
     }
 
-    fun setRegion(r: Region?): Boolean {
+    /**
+     * Sets this region to [region].
+     *
+     * @return true if [region] is not empty
+     */
+    fun setRegion(region: Region): Boolean {
         return try {
             Stats.onNativeCall()
-            Region_nSetRegion(_ptr, getPtr(r))
+            Region_nSetRegion(_ptr, getPtr(region))
         } finally {
             reachabilityBarrier(this)
-            reachabilityBarrier(r)
+            reachabilityBarrier(region)
         }
     }
 
-    fun setPath(path: Path?, clip: Region?): Boolean {
+    /**
+     * Sets this region to the rasterized outline of [path] clipped by [clip].
+     *
+     * @return true if the resulting region is not empty
+     */
+    fun setPath(path: Path, clip: Region): Boolean {
         return try {
             Stats.onNativeCall()
-            Region_nSetPath(
-                _ptr,
-                getPtr(path),
-                getPtr(clip)
-            )
+            Region_nSetPath(_ptr, getPtr(path), getPtr(clip))
         } finally {
             reachabilityBarrier(this)
             reachabilityBarrier(path)
@@ -143,28 +217,33 @@ class Region : Managed(Region_nMake(), _FinalizerHolder.PTR) {
         }
     }
 
+    /** Returns true if this region intersects [rect]. */
     fun intersects(rect: IRect): Boolean {
+        return intersects(rect.left, rect.top, rect.right, rect.bottom)
+    }
+
+    /** Returns true if this region intersects [left], [top], [right], [bottom]. */
+    fun intersects(left: Int, top: Int, right: Int, bottom: Int): Boolean {
         return try {
             Stats.onNativeCall()
-            Region_nIntersectsIRect(_ptr, rect.left, rect.top, rect.right, rect.bottom)
+            Region_nIntersectsIRect(_ptr, left, top, right, bottom)
         } finally {
             reachabilityBarrier(this)
         }
     }
 
-    fun intersects(r: Region?): Boolean {
+    /** Returns true if this region intersects [region]. */
+    fun intersects(region: Region): Boolean {
         return try {
             Stats.onNativeCall()
-            Region_nIntersectsRegion(
-                _ptr,
-                getPtr(r)
-            )
+            Region_nIntersectsRegion(_ptr, getPtr(region))
         } finally {
             reachabilityBarrier(this)
-            reachabilityBarrier(r)
+            reachabilityBarrier(region)
         }
     }
 
+    /** Returns true if point ([x], [y]) is inside this region. */
     fun contains(x: Int, y: Int): Boolean {
         return try {
             Stats.onNativeCall()
@@ -174,56 +253,77 @@ class Region : Managed(Region_nMake(), _FinalizerHolder.PTR) {
         }
     }
 
+    /** Returns true if rectangle ([left], [top], [right], [bottom]) is fully inside this region. */
+    fun contains(left: Int, top: Int, right: Int, bottom: Int): Boolean {
+        return try {
+            Stats.onNativeCall()
+            Region_nContainsIRect(_ptr, left, top, right, bottom)
+        } finally {
+            reachabilityBarrier(this)
+        }
+    }
+
+    /** Returns true if [rect] is fully inside this region. */
     operator fun contains(rect: IRect): Boolean {
+        return contains(rect.left, rect.top, rect.right, rect.bottom)
+    }
+
+    /** Returns true if [region] is fully inside this region. */
+    operator fun contains(region: Region): Boolean {
         return try {
             Stats.onNativeCall()
-            Region_nContainsIRect(_ptr, rect.left, rect.top, rect.right, rect.bottom)
+            Region_nContainsRegion(_ptr, getPtr(region))
         } finally {
             reachabilityBarrier(this)
+            reachabilityBarrier(region)
         }
     }
 
-    operator fun contains(r: Region?): Boolean {
-        return try {
-            Stats.onNativeCall()
-            Region_nContainsRegion(_ptr, getPtr(r))
-        } finally {
-            reachabilityBarrier(this)
-            reachabilityBarrier(r)
-        }
-    }
-
+    /**
+     * Fast conservative containment check.
+     * Returns true only when this region is a single rectangle containing [rect].
+     */
     fun quickContains(rect: IRect): Boolean {
+        return quickContains(rect.left, rect.top, rect.right, rect.bottom)
+    }
+
+    /** Fast conservative containment check for rectangle coordinates. */
+    fun quickContains(left: Int, top: Int, right: Int, bottom: Int): Boolean {
         return try {
             Stats.onNativeCall()
-            Region_nQuickContains(_ptr, rect.left, rect.top, rect.right, rect.bottom)
+            Region_nQuickContains(_ptr, left, top, right, bottom)
         } finally {
             reachabilityBarrier(this)
         }
     }
 
+    /** Fast conservative rejection check for [rect]. */
     fun quickReject(rect: IRect): Boolean {
+        return quickReject(rect.left, rect.top, rect.right, rect.bottom)
+    }
+
+    /** Fast conservative rejection check for rectangle coordinates. */
+    fun quickReject(left: Int, top: Int, right: Int, bottom: Int): Boolean {
         return try {
             Stats.onNativeCall()
-            Region_nQuickRejectIRect(_ptr, rect.left, rect.top, rect.right, rect.bottom)
+            Region_nQuickRejectIRect(_ptr, left, top, right, bottom)
         } finally {
             reachabilityBarrier(this)
         }
     }
 
-    fun quickReject(r: Region?): Boolean {
+    /** Fast conservative rejection check for [region]. */
+    fun quickReject(region: Region): Boolean {
         return try {
             Stats.onNativeCall()
-            Region_nQuickRejectRegion(
-                _ptr,
-                getPtr(r)
-            )
+            Region_nQuickRejectRegion(_ptr, getPtr(region))
         } finally {
             reachabilityBarrier(this)
-            reachabilityBarrier(r)
+            reachabilityBarrier(region)
         }
     }
 
+    /** Offsets this region by ([dx], [dy]). */
     fun translate(dx: Int, dy: Int) {
         try {
             Stats.onNativeCall()
@@ -233,85 +333,73 @@ class Region : Managed(Region_nMake(), _FinalizerHolder.PTR) {
         }
     }
 
+    /** Replaces this region with result of `this op rect`. */
     fun op(rect: IRect, op: Op): Boolean {
+        return op(rect.left, rect.top, rect.right, rect.bottom, op)
+    }
+
+    /** Replaces this region with result of `this op rect`. */
+    fun op(left: Int, top: Int, right: Int, bottom: Int, op: Op): Boolean {
         return try {
             Stats.onNativeCall()
-            Region_nOpIRect(
-                _ptr,
-                rect.left,
-                rect.top,
-                rect.right,
-                rect.bottom,
-                op.ordinal
-            )
+            Region_nOpIRect(_ptr, left, top, right, bottom, op.ordinal)
         } finally {
             reachabilityBarrier(this)
         }
     }
 
-    fun op(r: Region?, op: Op): Boolean {
+    /** Replaces this region with result of `this op region`. */
+    fun op(region: Region, op: Op): Boolean {
         return try {
             Stats.onNativeCall()
-            Region_nOpRegion(
-                _ptr,
-                getPtr(r),
-                op.ordinal
-            )
+            Region_nOpRegion(_ptr, getPtr(region), op.ordinal)
         } finally {
             reachabilityBarrier(this)
-            reachabilityBarrier(r)
+            reachabilityBarrier(region)
         }
     }
 
-    fun op(rect: IRect, r: Region?, op: Op): Boolean {
+    /** Replaces this region with result of `rect op region`. */
+    fun op(rect: IRect, region: Region, op: Op): Boolean {
+        return op(rect.left, rect.top, rect.right, rect.bottom, region, op)
+    }
+
+    /** Replaces this region with result of `rect op region`. */
+    fun op(left: Int, top: Int, right: Int, bottom: Int, region: Region, op: Op): Boolean {
         return try {
             Stats.onNativeCall()
-            Region_nOpIRectRegion(
-                _ptr,
-                rect.left,
-                rect.top,
-                rect.right,
-                rect.bottom,
-                getPtr(r),
-                op.ordinal
-            )
+            Region_nOpIRectRegion(_ptr, left, top, right, bottom, getPtr(region), op.ordinal)
         } finally {
             reachabilityBarrier(this)
-            reachabilityBarrier(r)
+            reachabilityBarrier(region)
         }
     }
 
-    fun op(r: Region?, rect: IRect, op: Op): Boolean {
+    /** Replaces this region with result of `region op rect`. */
+    fun op(region: Region, rect: IRect, op: Op): Boolean {
+        return op(region, rect.left, rect.top, rect.right, rect.bottom, op)
+    }
+
+    /** Replaces this region with result of `region op rect`. */
+    fun op(region: Region, left: Int, top: Int, right: Int, bottom: Int, op: Op): Boolean {
         return try {
             Stats.onNativeCall()
-            Region_nOpRegionIRect(
-                _ptr,
-                getPtr(r),
-                rect.left,
-                rect.top,
-                rect.right,
-                rect.bottom,
-                op.ordinal
-            )
+            Region_nOpRegionIRect(_ptr, getPtr(region), left, top, right, bottom, op.ordinal)
         } finally {
             reachabilityBarrier(this)
-            reachabilityBarrier(r)
+            reachabilityBarrier(region)
         }
     }
 
-    fun op(a: Region?, b: Region?, op: Op): Boolean {
+    /** Replaces this region with result of `regionA op regionB`. */
+    fun op(regionA: Region, regionB: Region, op: Op): Boolean {
         return try {
             Stats.onNativeCall()
-            Region_nOpRegionRegion(
-                _ptr,
-                getPtr(a),
-                getPtr(b),
-                op.ordinal
-            )
+            Region_nOpRegionRegion(_ptr, getPtr(regionA), getPtr(regionB), op.ordinal)
         } finally {
             reachabilityBarrier(this)
-            reachabilityBarrier(a)
-            reachabilityBarrier(b)
+            reachabilityBarrier(regionA)
+            reachabilityBarrier(regionB)
         }
     }
 
@@ -323,7 +411,6 @@ class Region : Managed(Region_nMake(), _FinalizerHolder.PTR) {
         Stats.onNativeCall()
     }
 }
-
 
 @ExternalSymbolName("org_jetbrains_skia_Region__1nMake")
 private external fun Region_nMake(): NativePointer
@@ -341,7 +428,7 @@ private external fun Region_nIsRect(ptr: NativePointer): Boolean
 private external fun Region_nGetBounds(ptr: NativePointer, ltrb: InteropPointer)
 
 @ExternalSymbolName("org_jetbrains_skia_Region__1nSet")
-private external fun Region_nSet(ptr: NativePointer, regoinPtr: NativePointer): Boolean
+private external fun Region_nSet(ptr: NativePointer, regionPtr: NativePointer): Boolean
 
 @ExternalSymbolName("org_jetbrains_skia_Region__1nIsComplex")
 private external fun Region_nIsComplex(ptr: NativePointer): Boolean
@@ -349,8 +436,11 @@ private external fun Region_nIsComplex(ptr: NativePointer): Boolean
 @ExternalSymbolName("org_jetbrains_skia_Region__1nComputeRegionComplexity")
 private external fun Region_nComputeRegionComplexity(ptr: NativePointer): Int
 
+@ExternalSymbolName("org_jetbrains_skia_Region__1nAddBoundaryPath")
+private external fun Region_nAddBoundaryPath(ptr: NativePointer, pathBuilderPtr: NativePointer): Boolean
+
 @ExternalSymbolName("org_jetbrains_skia_Region__1nGetBoundaryPath")
-private external fun Region_nGetBoundaryPath(ptr: NativePointer, pathPtr: NativePointer): Boolean
+private external fun Region_nGetBoundaryPath(ptr: NativePointer): NativePointer
 
 @ExternalSymbolName("org_jetbrains_skia_Region__1nSetEmpty")
 private external fun Region_nSetEmpty(ptr: NativePointer): Boolean
@@ -411,7 +501,6 @@ private external fun Region_nOpIRectRegion(
     op: Int
 ): Boolean
 
-
 @ExternalSymbolName("org_jetbrains_skia_Region__1nOpRegionIRect")
 private external fun Region_nOpRegionIRect(
     ptr: NativePointer,
@@ -422,7 +511,6 @@ private external fun Region_nOpRegionIRect(
     bottom: Int,
     op: Int
 ): Boolean
-
 
 @ExternalSymbolName("org_jetbrains_skia_Region__1nOpRegionRegion")
 private external fun Region_nOpRegionRegion(

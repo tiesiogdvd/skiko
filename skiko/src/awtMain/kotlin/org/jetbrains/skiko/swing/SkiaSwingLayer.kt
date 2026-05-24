@@ -1,17 +1,15 @@
 package org.jetbrains.skiko.swing
 
-import org.jetbrains.skia.Canvas
 import org.jetbrains.skiko.*
 import org.jetbrains.skiko.redrawer.RedrawerManager
 import java.awt.Component
 import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.GraphicsConfiguration
-import javax.accessibility.Accessible
 import javax.accessibility.AccessibleContext
 import javax.swing.JPanel
 import javax.swing.SwingUtilities.isEventDispatchThread
-
+import org.jetbrains.skiko.internal.fastForEach
 /**
  * Swing component that draws content provided by [renderDelegate] with GPU acceleration using Skia engine.
  *
@@ -27,7 +25,7 @@ import javax.swing.SwingUtilities.isEventDispatchThread
 open class SkiaSwingLayer(
     renderDelegate: SkikoRenderDelegate,
     analytics: SkiaLayerAnalytics = SkiaLayerAnalytics.Empty,
-    externalAccessibleFactory: ((Component) -> Accessible)? = null,
+    private val accessibleContextProvider: ((Component) -> AccessibleContext)? = null,
     private val properties: SkiaLayerProperties = SkiaLayerProperties()
 ) : JPanel() {
     internal companion object {
@@ -43,15 +41,13 @@ open class SkiaSwingLayer(
 
     val clipComponents: MutableList<ClipRectangle> get() = mutableListOf()
 
-    private val renderDelegateWithClipping = object : SkikoRenderDelegate by renderDelegate {
-        override fun onRender(canvas: Canvas, width: Int, height: Int, nanoTime: Long) {
-            val scale = graphicsConfiguration.defaultTransform.scaleX.toFloat()
-            // clipping
-            for (component in clipComponents) {
-                canvas.clipRectBy(component, scale)
-            }
-            renderDelegate.onRender(canvas, width, height, nanoTime)
+    private val renderDelegateWithClipping = SkikoRenderDelegate { canvas, width, height, nanoTime ->
+        val scale = graphicsConfiguration.defaultTransform.scaleX.toFloat()
+        // clipping
+        clipComponents.fastForEach { component ->
+            canvas.cutoutFromClip(component, scale)
         }
+        renderDelegate.onRender(canvas, width, height, nanoTime)
     }
 
     private val swingLayerProperties = object : SwingLayerProperties {
@@ -126,17 +122,7 @@ open class SkiaSwingLayer(
         }
     }
 
-    @Suppress("LeakingThis")
-    private val nativeAccessibleFocusHelper = NativeAccessibleFocusHelper(
-        component = this,
-        externalAccessible = externalAccessibleFactory?.invoke(this)
-    )
-
     override fun getAccessibleContext(): AccessibleContext? {
-        return nativeAccessibleFocusHelper.accessibleContext ?: super.getAccessibleContext()
-    }
-
-    fun requestNativeFocusOnAccessible(accessible: Accessible?) {
-        nativeAccessibleFocusHelper.requestNativeFocusOnAccessible(accessible)
+        return accessibleContextProvider?.invoke(this) ?: super.getAccessibleContext()
     }
 }

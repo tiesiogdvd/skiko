@@ -12,12 +12,10 @@ class PathSegment constructor(
 ) {
 
     constructor(verbOrdinal: Int, x0: Float, y0: Float, isClosedContour: Boolean) : this(
-        PathVerb.values().get(
-            verbOrdinal
-        ), Point(x0, y0), null, null, null, 0.0f, false, isClosedContour
+        PathVerb.entries[verbOrdinal], Point(x0, y0), null, null, null, 0.0f, false, isClosedContour
     ) {
         require(verbOrdinal == PathVerb.MOVE.ordinal || verbOrdinal == PathVerb.CLOSE.ordinal) {
-            "Expected MOVE or CLOSE, got " + PathVerb.values()[verbOrdinal]
+            "Expected MOVE or CLOSE, got " + PathVerb.entries.toTypedArray()[verbOrdinal]
         }
     }
 
@@ -116,7 +114,7 @@ class PathSegment constructor(
                 isClosedContour
             )
             PathVerb.CUBIC -> objectHashes(verb, p0, p1, p2, p3, isClosedContour)
-            else -> throw RuntimeException("Unreachable")
+            PathVerb.CLOSE -> objectHashes(verb, p0, isClosedContour)
         }
     }
 }

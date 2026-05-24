@@ -1,14 +1,16 @@
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 plugins {
-    kotlin("jvm") version "1.9.21"
+    kotlin("jvm") version "2.3.20"
     application
 }
 
 repositories {
     mavenLocal()
-    mavenCentral()
-    maven("https://maven.pkg.jetbrains.space/public/p/compose/dev")
+    mavenCentral {
+        url = uri("https://cache-redirector.jetbrains.com/maven-central")
+    }
+    maven("https://redirector.kotlinlang.org/maven/compose-dev")
 }
 
 val osName = System.getProperty("os.name")
@@ -35,7 +37,7 @@ if (project.hasProperty("skiko.version")) {
 
 dependencies {
     implementation(platform("org.jetbrains.kotlin:kotlin-bom"))
-    implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8")
+    implementation(kotlin("stdlib"))
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.5.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.5.0")
     implementation("org.jetbrains.skiko:skiko-awt-runtime-$target:$version")
@@ -96,5 +98,5 @@ tasks.register("runInterop") {
 }
 
 tasks.withType<KotlinCompile>().configureEach {
-    kotlinOptions.freeCompilerArgs += "-opt-in=kotlin.RequiresOptIn"
+    compilerOptions.freeCompilerArgs.add("-opt-in=kotlin.RequiresOptIn")
 }

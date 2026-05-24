@@ -3,8 +3,22 @@ package org.jetbrains.skia
 import org.jetbrains.skia.impl.Library.Companion.staticLoad
 import org.jetbrains.skia.impl.*
 
+/**
+ *  Base class for image filters. If one is installed in the paint, then all drawing occurs as
+ *  usual, but it is as if the drawing happened into an offscreen (before the xfermode is applied).
+ *  This offscreen bitmap will then be handed to the imagefilter, who in turn creates a new bitmap
+ *  which is what will finally be drawn to the device (using the original xfermode).
+ *
+ *  The local space of image filters matches the local space of the drawn geometry. For instance if
+ *  there is rotation on the canvas, the blur will be computed along those rotated axes and not in
+ *  the device space. In order to achieve this result, the actual drawing of the geometry may happen
+ *  in an unrotated coordinate system so that the filtered image can be computed more easily, and
+ *  then it will be post transformed to match what would have been produced if the geometry were
+ *  drawn with the total canvas matrix to begin with.
+ */
 class ImageFilter internal constructor(ptr: NativePointer) : RefCnt(ptr) {
     companion object {
+
         fun makeArithmetic(
             k1: Float,
             k2: Float,
@@ -199,24 +213,60 @@ class ImageFilter internal constructor(ptr: NativePointer) : RefCnt(ptr) {
         }
 
         fun makeImage(image: Image): ImageFilter {
-            val r: Rect = Rect.makeWH(image.width.toFloat(), image.height.toFloat())
-            return makeImage(image, r, r, SamplingMode.DEFAULT)
+            return makeImage(
+                image,
+                0f,
+                0f,
+                image.width.toFloat(),
+                image.height.toFloat(),
+                0f,
+                0f,
+                image.width.toFloat(),
+                image.height.toFloat(),
+                SamplingMode.DEFAULT
+            )
         }
 
         fun makeImage(image: Image?, src: Rect, dst: Rect, mode: SamplingMode): ImageFilter {
+            return makeImage(
+                image,
+                src.left,
+                src.top,
+                src.right,
+                src.bottom,
+                dst.left,
+                dst.top,
+                dst.right,
+                dst.bottom,
+                mode
+            )
+        }
+
+        fun makeImage(
+            image: Image?,
+            srcLeft: Float,
+            srcTop: Float,
+            srcRight: Float,
+            srcBottom: Float,
+            dstLeft: Float,
+            dstTop: Float,
+            dstRight: Float,
+            dstBottom: Float,
+            mode: SamplingMode
+        ): ImageFilter {
             return try {
                 Stats.onNativeCall()
                 ImageFilter(
                     _nMakeImage(
                         getPtr(image),
-                        src.left,
-                        src.top,
-                        src.right,
-                        src.bottom,
-                        dst.left,
-                        dst.top,
-                        dst.right,
-                        dst.bottom,
+                        srcLeft,
+                        srcTop,
+                        srcRight,
+                        srcBottom,
+                        dstLeft,
+                        dstTop,
+                        dstRight,
+                        dstBottom,
                         mode._packedInt1(),
                         mode._packedInt2()
                     )
@@ -400,18 +450,42 @@ class ImageFilter internal constructor(ptr: NativePointer) : RefCnt(ptr) {
         }
 
         fun makeTile(src: Rect, dst: Rect, input: ImageFilter?): ImageFilter {
+            return makeTile(
+                src.left,
+                src.top,
+                src.right,
+                src.bottom,
+                dst.left,
+                dst.top,
+                dst.right,
+                dst.bottom,
+                input
+            )
+        }
+
+        fun makeTile(
+            srcLeft: Float,
+            srcTop: Float,
+            srcRight: Float,
+            srcBottom: Float,
+            dstLeft: Float,
+            dstTop: Float,
+            dstRight: Float,
+            dstBottom: Float,
+            input: ImageFilter?
+        ): ImageFilter {
             return try {
                 Stats.onNativeCall()
                 ImageFilter(
                     _nMakeTile(
-                        src.left,
-                        src.top,
-                        src.right,
-                        src.bottom,
-                        dst.left,
-                        dst.top,
-                        dst.right,
-                        dst.bottom,
+                        srcLeft,
+                        srcTop,
+                        srcRight,
+                        srcBottom,
+                        dstLeft,
+                        dstTop,
+                        dstRight,
+                        dstBottom,
                         getPtr(input)
                     )
                 )

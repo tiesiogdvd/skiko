@@ -72,8 +72,10 @@ fun SkikoProjectContext.createCompileJvmBindingsTask(
     val osFlags: Array<String>
     when (targetOs) {
         OS.MacOS -> {
+            compiler.set(project.appleToolchainExecutableOrDefault("clang++", compiler.get()))
             includeHeadersNonRecursive(jdkHome.resolve("include/darwin"))
             osFlags = arrayOf(
+                *project.appleMacOsSdkFlags().toTypedArray(),
                 *targetOs.clangFlags,
                 *buildType.clangFlags,
                 "-arch", if (targetArch == Arch.Arm64) "arm64" else "x86_64",
@@ -199,7 +201,7 @@ fun SkikoProjectContext.createObjcCompileTask(
     includeHeadersNonRecursive(projectDir.resolve("src/commonMain/cpp/common/include"))
     includeHeadersNonRecursive(projectDir.resolve("src/jvmMain/cpp"))
 
-    compiler.set("clang")
+    compiler.set(project.appleToolchainExecutableOrDefault("clang", "clang"))
     buildVariant.set(buildType)
     buildTargetOS.set(os)
     buildTargetArch.set(arch)
@@ -207,6 +209,7 @@ fun SkikoProjectContext.createObjcCompileTask(
         listOf(
             "-fobjc-arc",
             "-arch", if (arch == Arch.Arm64) "arm64" else "x86_64",
+            *project.appleMacOsSdkFlags().toTypedArray(),
             *os.clangFlags,
             *buildType.clangFlags,
             *skiaPreprocessorFlags(os, buildType),
@@ -229,7 +232,16 @@ fun SkikoProjectContext.createLinkJvmBindings(
     val osFlags: Array<String>
 
     libFiles = project.fileTree(skiaJvmBindingsDir.map { it.resolve(skiaBinSubdir) }) {
-        include(if (targetOs.isWindows) "*.lib" else "*.a")
+        val fileExtension = if (targetOs.isWindows) "lib" else "a"
+        val filePrefix = if (targetOs.isWindows) "" else "lib"
+        val excludedLibs = listOf(
+            "skia_graphite_ext",
+            "skia_graphite_dawn_ext",
+            "dawn_combined"
+        )
+        include("*.$fileExtension")
+
+        exclude(excludedLibs.map { "$filePrefix$it.$fileExtension" })
     }
 
     dependsOn(compileTask)
@@ -271,26 +283,33 @@ fun SkikoProjectContext.createLinkJvmBindings(
             )
         }
         OS.Linux -> {
-            osFlags = arrayOf(
-                "-shared",
-                // `libstdc++.so.6.*` binaries are forward-compatible and used from GCC 3.4 to 16+,
-                // so do not use `-static-libstdc++` to avoid issues with complex setup.
-                "-static-libgcc",
-                "-lGL",
-                "-lX11",
-                "-lfontconfig",
-                // Enforce immediate symbol resolution at library load time to prevent
-                // lazy-binding issues and make GOT read-only afterwards.
-                "-Wl,-z,relro,-z,now",
-                // Hack to fix problem with linker not always finding certain declarations.
-                "$skiaBinDir/libsksg.a",
-                "$skiaBinDir/libskia.a",
-                "$skiaBinDir/libskunicode_core.a",
-                "$skiaBinDir/libskunicode_icu.a",
-                "$skiaBinDir/libskshaper.a",
-                "$skiaBinDir/libjsonreader.a",
-
-            )
+            osFlags = mutableListOf<String>().apply {
+                addAll(
+                    arrayOf(
+                        "-shared",
+                        // `libstdc++.so.6.*` binaries are forward-compatible and used from GCC 3.4 to 16+,
+                        // so do not use `-static-libstdc++` to avoid issues with complex setup.
+                        "-static-libgcc",
+                        "-lGL",
+                        "-lX11",
+                        "-lfontconfig",
+                        // Enforce immediate symbol resolution at library load time to prevent
+                        // lazy-binding issues and make GOT read-only afterwards.
+                        "-Wl,-z,relro,-z,now",
+                        // Hack to fix problem with linker not always finding certain declarations.
+                        "$skiaBinDir/libsksg.a",
+                        "$skiaBinDir/libskia.a",
+                        "$skiaBinDir/libskia_ganesh_ext.a",
+                        "$skiaBinDir/libskunicode_core.a",
+                        "$skiaBinDir/libskunicode_icu.a",
+                        "$skiaBinDir/libskshaper.a",
+                        "$skiaBinDir/libjsonreader.a"
+                    )
+                )
+                if (targetArch == Arch.Arm64) {
+                    add("-lEGL")
+                }
+            }.toTypedArray()
         }
         OS.Windows -> {
             libDirs.set(windowsSdkPaths.libDirs)
@@ -331,6 +350,7 @@ fun SkikoProjectContext.createLinkJvmBindings(
                 "-latomic",
                 // Hack to fix problem with linker not always finding certain declarations.
                 "$skiaBinDir/libskia.a",
+                "$skiaBinDir/libskia_ganesh_ext.a"
             )
             linker.set(project.androidClangFor(targetArch))
         }

@@ -5,8 +5,10 @@ import org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile
 buildscript {
     repositories {
         google()
-        mavenCentral()
-        maven("https://maven.pkg.jetbrains.space/public/p/compose/dev")
+        mavenCentral {
+            url = uri("https://cache-redirector.jetbrains.com/maven-central")
+        }
+        maven("https://redirector.kotlinlang.org/maven/compose-dev")
     }
 
     dependencies {
@@ -17,13 +19,15 @@ buildscript {
 repositories {
     mavenLocal()
     google()
-    mavenCentral()
-    maven("https://maven.pkg.jetbrains.space/public/p/compose/dev")
+    mavenCentral {
+        url = uri("https://cache-redirector.jetbrains.com/maven-central")
+    }
+    maven("https://redirector.kotlinlang.org/maven/compose-dev")
 }
 
 plugins {
     id("com.android.application") version "8.9.0"
-    kotlin("android") version "1.9.21"
+    kotlin("android") version "2.3.20"
 }
 
 val skikoNativeX64 by configurations.creating

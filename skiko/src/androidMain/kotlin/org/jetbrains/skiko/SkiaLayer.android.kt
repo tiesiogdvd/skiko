@@ -4,6 +4,7 @@ import android.content.Context
 import android.view.*
 import org.jetbrains.skia.Canvas
 import org.jetbrains.skia.PixelGeometry
+import org.jetbrains.skia.Color
 
 actual open class SkiaLayer {
     private var glView: SkikoSurfaceView? = null
@@ -17,12 +18,6 @@ actual open class SkiaLayer {
         get() = true
         set(value) {
             if (value) throw IllegalArgumentException("changing fullscreen is unsupported")
-        }
-
-    actual var transparency: Boolean
-        get() = false
-        set(value) {
-            if (value) throw IllegalArgumentException("transparency unsupported")
         }
 
     actual var renderDelegate: SkikoRenderDelegate? = null

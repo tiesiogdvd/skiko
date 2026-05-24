@@ -1,90 +1,57 @@
 #!/usr/bin/env bash
-####### Variables you can edit to change build config, or set same environment variables before script execution #######
-SKIA_VERSION="${SKIA_VERSION:="m138-80d088a-1"}" # Version of Skia m###-commit-sha-#. This commit sha will be cloned from repository https://github.com/JetBrains/skia
-SKIA_DEBUG_MODE="${SKIA_DEBUG_MODE:="false"}" # in debug mode Skiko will be published with postix "+debug", for example "0.0.0-SNAPSHOT+debug"
-SKIA_TARGET="${SKIA_TARGET:="iosSim"}" # possible values: "ios", "iosSim", "macos", "windows", "linux", "wasm", "android", "tvos", "tvosSim"
-# For M1 Mac use "iosSim" to build for simulator, and ios to build for device.
-# For Intel Mac - use "ios" target to build for iOS x64 simulator.
-# For Desktop JVM use "macos", "windows", "linux"
-########################################################################################################################
+# Build Skia locally and publish to Maven Local
+#
+# This script handles git operations and delegates configuration to Gradle.
+# For more control, use Gradle tasks directly:
+#   ./gradlew prepareLocalSkiaBuild -Pskia.repo.dir=/path/to/skia
+#   ./gradlew publishToMavenLocal -Pskia.dir=/path/to/skia
+#
+# Environment variables:
+#   SKIA_VERSION   - Skia version to build (default: from gradle.properties)
+#   SKIA_TARGET    - Target platform: ios, iosSim, macos, windows, linux, wasm (default: current OS)
+#   SKIA_REPO_DIR  - Skia repository directory with tools/skia_release/ (default: ./skia)
+#   SKIA_REPO_URL  - Skia repository URL to clone (default: tiesiogdvd/skia)
+#   SKIA_DIR       - Skia source directory for publishing (default: $SKIA_REPO_DIR)
 
-if [[ $SKIA_DEBUG_MODE == "true" ]]; then
-  skikoBuildType=Debug
-else
-  skikoBuildType=Release
-fi
-
-case $SKIA_TARGET in
-  "ios")
-    if [[ $(uname -m) == 'arm64' ]]; then
-      SKIKO_TARGET_FLAGS="-Pskiko.native.ios.arm64.enabled=true -Pskiko.awt.enabled=false"
-      skikoMachines=("arm64")
-    else
-      SKIKO_TARGET_FLAGS="-Pskiko.native.ios.x64.enabled=true -Pskiko.awt.enabled=false"
-      skikoMachines=("x64")
-    fi
-    ;;
-  "iosSim")
-    if [[ $(uname -m) == 'arm64' ]]; then
-      SKIKO_TARGET_FLAGS="-Pskiko.native.ios.simulatorArm64.enabled=true -Pskiko.awt.enabled=false"
-      skikoMachines=("arm64")
-    else
-      SKIKO_TARGET_FLAGS="-Pskiko.native.ios.x64.enabled=true -Pskiko.awt.enabled=false"
-      skikoMachines=("x64")
-    fi
-    ;;
-  "macos")
-    SKIKO_TARGET_FLAGS="-Pskiko.awt.enabled=true"
-    if [[ $(uname -m) == 'arm64' ]]; then
-      skikoMachines=("arm64" "x64") # bash arrays split elements by spaces
-    else
-      skikoMachines=("x64")
-    fi
-    ;;
-  "windows")
-    SKIKO_TARGET_FLAGS="-Pskiko.awt.enabled=true"
-    if [[ $(uname -m) == 'arm64' ]]; then
-      skikoMachines=("arm64")
-    else
-      skikoMachines=("x64")
-    fi
-    ;;
-  "linux")
-    SKIKO_TARGET_FLAGS="-Pskiko.awt.enabled=true"
-    if [[ $(uname -m) == 'arm64' ]]; then
-      skikoMachines=("arm64")
-    else
-      skikoMachines=("x64")
-    fi
-    ;;
-  "wasm")
-    SKIKO_TARGET_FLAGS="-Pskiko.wasm.enabled=true -Pskiko.awt.enabled=false"
-    if [[ $(uname -m) == 'arm64' ]]; then
-      skikoMachines=("arm64")
-    else
-      skikoMachines=("x64")
-    fi
-    ;;
-  *)
-    echo "can't determine skia target"; exit 1
-    ;;
-esac
-
-set -e # fail fast
-set -x # print all commands
+set -e  # Exit on error
 cd "$(dirname "$0")"
 SCRIPT_DIR="$(pwd)"
 
-git clone https://github.com/tiesiogdvd/skia-pack.git || echo "skia-pack exists. You can remove it or update by hands with git pull"
-cd skia-pack
-[ -d "skia" ] && echo "skip cript/checkout.py, because directory skia-pack/skia already exists"
-[ ! -d "skia" ] && python3 script/checkout.py --version "$SKIA_VERSION"
-for skikoMachine in ${skikoMachines[@]}; do
-  python3 script/build.py --target "$SKIA_TARGET" --machine "$skikoMachine" --build-type "$skikoBuildType"
-  python3 script/archive.py --version "$SKIA_VERSION" --target "$SKIA_TARGET" --machine "$skikoMachine" --build-type "$skikoBuildType"
-done
+# Use provided Skia repository directory or default
+SKIA_REPO_DIR="${SKIA_REPO_DIR:-${SKIA_PACK_DIR:-$SCRIPT_DIR/skia}}"
+SKIA_REPO_URL="${SKIA_REPO_URL:-https://github.com/tiesiogdvd/skia.git}"
+
+# Clone if needed
+if [ ! -d "$SKIA_REPO_DIR" ]; then
+    echo "Cloning skia repository to $SKIA_REPO_DIR..."
+    git clone "$SKIA_REPO_URL" "$SKIA_REPO_DIR"
+fi
+
+# Convert to absolute path if relative
+if [[ "$SKIA_REPO_DIR" != /* ]]; then
+    SKIA_REPO_DIR="$(cd "$SKIA_REPO_DIR" && pwd)"
+fi
+
+echo "Using skia repository: $SKIA_REPO_DIR"
+cd "$SKIA_REPO_DIR"
+
+# Get version from Gradle (respects SKIA_VERSION env var)
+SKIA_VERSION=$(cd "$SCRIPT_DIR" && ./gradlew -q printSkiaVersion)
+echo "Using Skia version: $SKIA_VERSION"
+
 cd "$SCRIPT_DIR"
+echo "Building Skia binaries with Gradle..."
+./gradlew prepareLocalSkiaBuild -Pskia.repo.dir="$SKIA_REPO_DIR"
 
-rm -rf build/classes/kotlin/* # We need to drop old cache. We can do it with ./gradlew clean as well, but it tooks longer time to redownload dependencies dir.
+# Publish Skiko to Maven Local with the built Skia binaries
+# If SKIA_DIR is not explicitly set, use the same checkout that contains the
+# integrated release scripts and the built outputs.
+if [ -z "$SKIA_DIR" ]; then
+    SKIA_DIR="$SKIA_REPO_DIR"
+fi
 
-./gradlew publishToMavenLocal $SKIKO_TARGET_FLAGS -Pskia.dir="$(pwd)/skia-pack/skia" -Pskiko.debug=$SKIA_DEBUG_MODE
+echo "Publishing Skiko to Maven Local..."
+echo "Using Skia source directory: $SKIA_DIR"
+./gradlew publishToMavenLocal -Pskia.dir="$SKIA_DIR"
+
+echo "Successfully published Skia build to Maven Local"
