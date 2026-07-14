@@ -972,6 +972,7 @@ $dokka.location:org.jetbrains.skia/BackendRenderTarget.Companion/makeMetal/#kotl
 $dokka.location:org.jetbrains.skia/BackendRenderTarget///PointingToDeclaration/skiko/org.jetbrains.skia/-backend-render-target/index.html
 $dokka.location:org.jetbrains.skia/BackendTexture.Companion///PointingToDeclaration/skiko/org.jetbrains.skia/-backend-texture/-companion/index.html
 $dokka.location:org.jetbrains.skia/BackendTexture.Companion/makeGL/#kotlin.Int#kotlin.Int#kotlin.Boolean#kotlin.Int#kotlin.Int#kotlin.Int/PointingToDeclaration/skiko/org.jetbrains.skia/-backend-texture/-companion/make-g-l.html
+$dokka.location:org.jetbrains.skia/BackendTexture.Companion/makeMetal/#kotlin.Int#kotlin.Int#kotlin.Boolean#org.jetbrains.skia.impl.NativePointer/PointingToDeclaration/skiko/org.jetbrains.skia/-backend-texture/-companion/make-metal.html
 $dokka.location:org.jetbrains.skia/BackendTexture///PointingToDeclaration/skiko/org.jetbrains.skia/-backend-texture/index.html
 $dokka.location:org.jetbrains.skia/BackendTexture/glTextureParametersModified/#/PointingToDeclaration/skiko/org.jetbrains.skia/-backend-texture/gl-texture-parameters-modified.html
 $dokka.location:org.jetbrains.skia/Bitmap.Companion///PointingToDeclaration/skiko/org.jetbrains.skia/-bitmap/-companion/index.html
