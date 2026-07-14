@@ -89,7 +89,7 @@ class BackendTexture internal constructor(ptr: NativePointer) : Managed(ptr, _Fi
             levelCnt: Int
         ): BackendTexture {
             Stats.onNativeCall()
-            return BackendTexture(_nMakeDirect3D(width, height, resourcePtr, format, sampleCnt, levelCnt))
+            return BackendTexture(_nMakeDirect3DTexture(width, height, resourcePtr, format, sampleCnt, levelCnt))
         }
 
         init {
@@ -139,7 +139,7 @@ private external fun _nMakeMetal(
 ): NativePointer
 
 @ExternalSymbolName("BackendTexture_nMakeDirect3D")
-private external fun _nMakeDirect3D(
+private external fun _nMakeDirect3DTexture(
     width: Int,
     height: Int,
     resourcePtr: NativePointer,

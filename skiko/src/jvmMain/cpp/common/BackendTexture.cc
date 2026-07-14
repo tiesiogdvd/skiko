@@ -68,7 +68,7 @@ extern "C" JNIEXPORT jlong JNICALL Java_org_jetbrains_skia_BackendTextureKt__1nM
 #include "ganesh/d3d/GrD3DTypes.h"
 #include "ganesh/d3d/GrD3DBackendSurface.h"
 
-extern "C" JNIEXPORT jlong JNICALL Java_org_jetbrains_skia_BackendTextureKt__1nMakeDirect3D
+extern "C" JNIEXPORT jlong JNICALL Java_org_jetbrains_skia_BackendTextureKt__1nMakeDirect3DTexture
   (JNIEnv* env, jclass jclass, jint width, jint height, jlong resourcePtr, jint format, jint sampleCnt, jint levelCnt) {
     GrD3DTextureResourceInfo texResInfo = {};
     ID3D12Resource* resource = reinterpret_cast<ID3D12Resource*>(static_cast<uintptr_t>(resourcePtr));
