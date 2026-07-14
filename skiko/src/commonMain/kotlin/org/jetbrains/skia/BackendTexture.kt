@@ -37,6 +37,29 @@ class BackendTexture internal constructor(ptr: NativePointer) : Managed(ptr, _Fi
             return BackendTexture(ptr)
         }
 
+        /**
+         * Creates BackendTexture from a Metal texture.
+         *
+         * The texture is RETAINED by the backend texture; adopting it into an
+         * Image (Image.adoptTextureFrom) hands that retain to Skia, which
+         * releases it when the image is freed — the caller keeps (and remains
+         * responsible for) its own reference.
+         *
+         * @param width - width of the [BackendTexture] to be created
+         * @param height - height of the [BackendTexture] to be created
+         * @param isMipmapped - if the passed [texturePtr] has Metal mipmaps, this should be true, otherwise false
+         * @param texturePtr - pointer to an MTLTexture; must be not zero
+         */
+        fun makeMetal(
+            width: Int,
+            height: Int,
+            isMipmapped: Boolean,
+            texturePtr: NativePointer
+        ): BackendTexture {
+            Stats.onNativeCall()
+            return BackendTexture(_nMakeMetal(width, height, isMipmapped, texturePtr))
+        }
+
         init {
             staticLoad()
         }
@@ -74,3 +97,11 @@ private external fun _nMakeGL(
 
 @ExternalSymbolName("org_jetbrains_skia_BackendTexture__1nGLTextureParametersModified")
 private external fun _nGLTextureParametersModified(backendTexturePtr: NativePointer)
+
+@ExternalSymbolName("BackendTexture_nMakeMetal")
+private external fun _nMakeMetal(
+    width: Int,
+    height: Int,
+    isMipmapped: Boolean,
+    texturePtr: NativePointer
+): NativePointer

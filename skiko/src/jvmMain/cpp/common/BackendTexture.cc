@@ -43,3 +43,23 @@ extern "C" JNIEXPORT void JNICALL Java_org_jetbrains_skia_BackendTextureKt__1nGL
     GrBackendTexture* backendTexture = reinterpret_cast<GrBackendTexture*>(static_cast<uintptr_t>(backendTexturePtr));
     GrBackendTextures::GLTextureParametersModified(backendTexture);
 }
+
+#ifdef SK_METAL
+#include "ganesh/mtl/GrMtlBackendSurface.h"
+#include "ganesh/mtl/GrMtlTypes.h"
+
+extern "C" JNIEXPORT jlong JNICALL Java_org_jetbrains_skia_BackendTextureKt__1nMakeMetal
+  (JNIEnv* env, jclass jclass, jint width, jint height, jboolean isMipmapped, jlong texturePtr) {
+    GrMTLHandle texture = reinterpret_cast<GrMTLHandle>(static_cast<uintptr_t>(texturePtr));
+    GrMtlTextureInfo textureInfo;
+    textureInfo.fTexture.retain(texture);
+    GrBackendTexture obj = GrBackendTextures::MakeMtl(
+        width,
+        height,
+        isMipmapped ? skgpu::Mipmapped::kYes : skgpu::Mipmapped::kNo,
+        textureInfo
+    );
+    GrBackendTexture* instance = new GrBackendTexture(obj);
+    return reinterpret_cast<jlong>(instance);
+}
+#endif // SK_METAL
