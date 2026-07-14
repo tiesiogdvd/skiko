@@ -971,6 +971,7 @@ $dokka.location:org.jetbrains.skia/BackendRenderTarget.Companion/makeGL/#kotlin.
 $dokka.location:org.jetbrains.skia/BackendRenderTarget.Companion/makeMetal/#kotlin.Int#kotlin.Int#org.jetbrains.skia.impl.NativePointer/PointingToDeclaration/skiko/org.jetbrains.skia/-backend-render-target/-companion/make-metal.html
 $dokka.location:org.jetbrains.skia/BackendRenderTarget///PointingToDeclaration/skiko/org.jetbrains.skia/-backend-render-target/index.html
 $dokka.location:org.jetbrains.skia/BackendTexture.Companion///PointingToDeclaration/skiko/org.jetbrains.skia/-backend-texture/-companion/index.html
+$dokka.location:org.jetbrains.skia/BackendTexture.Companion/makeDirect3D/#kotlin.Int#kotlin.Int#org.jetbrains.skia.impl.NativePointer#kotlin.Int#kotlin.Int#kotlin.Int/PointingToDeclaration/skiko/org.jetbrains.skia/-backend-texture/-companion/make-direct3-d.html
 $dokka.location:org.jetbrains.skia/BackendTexture.Companion/makeGL/#kotlin.Int#kotlin.Int#kotlin.Boolean#kotlin.Int#kotlin.Int#kotlin.Int/PointingToDeclaration/skiko/org.jetbrains.skia/-backend-texture/-companion/make-g-l.html
 $dokka.location:org.jetbrains.skia/BackendTexture.Companion/makeMetal/#kotlin.Int#kotlin.Int#kotlin.Boolean#org.jetbrains.skia.impl.NativePointer/PointingToDeclaration/skiko/org.jetbrains.skia/-backend-texture/-companion/make-metal.html
 $dokka.location:org.jetbrains.skia/BackendTexture///PointingToDeclaration/skiko/org.jetbrains.skia/-backend-texture/index.html
