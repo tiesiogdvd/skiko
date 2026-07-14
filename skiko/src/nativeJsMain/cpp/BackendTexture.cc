@@ -60,3 +60,27 @@ SKIKO_EXPORT KNativePointer BackendTexture_nMakeMetal
     return 0;
 #endif
 }
+
+#ifdef SK_DIRECT3D
+#include "gpu/ganesh/d3d/GrD3DTypes.h"
+#include "gpu/ganesh/d3d/GrD3DBackendSurface.h"
+#endif
+
+SKIKO_EXPORT KNativePointer BackendTexture_nMakeDirect3D
+  (KInt width, KInt height, KNativePointer resourcePtr, KInt format, KInt sampleCnt, KInt levelCnt) {
+#ifdef SK_DIRECT3D
+    GrD3DTextureResourceInfo texResInfo = {};
+    ID3D12Resource* resource = reinterpret_cast<ID3D12Resource*>(resourcePtr);
+    texResInfo.fResource.retain(resource);
+    texResInfo.fResourceState = D3D12_RESOURCE_STATE_COMMON;
+    texResInfo.fFormat = static_cast<DXGI_FORMAT>(format);
+    texResInfo.fSampleCount = static_cast<uint32_t>(sampleCnt);
+    texResInfo.fLevelCount = static_cast<uint32_t>(levelCnt);
+    GrBackendTexture* instance = new GrBackendTexture(
+        GrBackendTextures::MakeD3D(width, height, texResInfo)
+    );
+    return instance;
+#else
+    return 0;
+#endif
+}

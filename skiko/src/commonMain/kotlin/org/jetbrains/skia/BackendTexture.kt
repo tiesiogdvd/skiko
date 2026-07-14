@@ -60,6 +60,38 @@ class BackendTexture internal constructor(ptr: NativePointer) : Managed(ptr, _Fi
             return BackendTexture(_nMakeMetal(width, height, isMipmapped, texturePtr))
         }
 
+        /**
+         * Creates BackendTexture from a Direct3D 12 resource.
+         *
+         * The resource is RETAINED by the backend texture; adopting it into an
+         * Image (Image.adoptTextureFrom) hands that retain to Skia, which
+         * releases it when the image is freed — the caller keeps (and remains
+         * responsible for) its own reference.
+         *
+         * The resource must be in D3D12_RESOURCE_STATE_COMMON at handoff (the
+         * state Skia is told to assume); a caller that transitions it later
+         * must notify Skia via the GrBackendTextures::SetD3DResourceState
+         * path before Skia samples again.
+         *
+         * @param width - width of the [BackendTexture] to be created
+         * @param height - height of the [BackendTexture] to be created
+         * @param resourcePtr - pointer to an ID3D12Resource; must be not zero
+         * @param format - the DXGI_FORMAT of the resource
+         * @param sampleCnt - sample count of the resource (1 for non-MSAA)
+         * @param levelCnt - mip level count of the resource (1 for no mips)
+         */
+        fun makeDirect3D(
+            width: Int,
+            height: Int,
+            resourcePtr: NativePointer,
+            format: Int,
+            sampleCnt: Int,
+            levelCnt: Int
+        ): BackendTexture {
+            Stats.onNativeCall()
+            return BackendTexture(_nMakeDirect3D(width, height, resourcePtr, format, sampleCnt, levelCnt))
+        }
+
         init {
             staticLoad()
         }
@@ -104,4 +136,14 @@ private external fun _nMakeMetal(
     height: Int,
     isMipmapped: Boolean,
     texturePtr: NativePointer
+): NativePointer
+
+@ExternalSymbolName("BackendTexture_nMakeDirect3D")
+private external fun _nMakeDirect3D(
+    width: Int,
+    height: Int,
+    resourcePtr: NativePointer,
+    format: Int,
+    sampleCnt: Int,
+    levelCnt: Int
 ): NativePointer
