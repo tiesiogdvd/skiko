@@ -186,6 +186,9 @@ fun SkikoProjectContext.compileNativeBridgesTask(
                 compiler.set(project.appleToolchainExecutableOrDefault("clang++", compiler.get()))
                 flags.set(listOf(
                     *project.appleMacOsSdkFlags().toTypedArray(),
+                    // The JVM bindings' deployment target: without it clang targets the build
+                    // host's macOS, and the klib's bridges outrank the consumer's minimum.
+                    *OS.MacOS.clangFlags,
                     *buildType.clangFlags,
                     *skiaPreprocessorFlags(OS.MacOS, buildType),
                     when(arch) {
