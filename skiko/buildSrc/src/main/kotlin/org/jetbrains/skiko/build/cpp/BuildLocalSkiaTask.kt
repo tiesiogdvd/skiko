@@ -51,11 +51,11 @@ abstract class BuildLocalSkiaTask : DefaultTask() {
         }
 
         // Validate version format
-        if (!version.matches(Regex("^m[0-9]+-[0-9a-f]+(-.+)?$"))) {
+        if (!version.matches(Regex("^m[0-9]+-(egl-)?[0-9a-f]+(-.+)?$"))) {
             throw GradleException(
                 "Invalid SKIA_VERSION format: '$version'\n" +
-                "Expected format: m###-commit_sha[-increment]\n" +
-                "Example: m138-80d088a-2"
+                "Expected format: m###[-egl]-commit_sha[-increment]\n" +
+                "Example: m138-80d088a-2, m156-egl-4aae26ec34"
             )
         }
 
@@ -81,7 +81,8 @@ abstract class BuildLocalSkiaTask : DefaultTask() {
                 "--skia-dir", ".",
                 "--target", target.id,
                 "--machine", machine.id,
-                "--build-type", type.id
+                "--build-type", type.id,
+                *gpuFlags(target)
             )
 
             logger.lifecycle("Archiving ${machine.id}...")
@@ -91,7 +92,8 @@ abstract class BuildLocalSkiaTask : DefaultTask() {
                 "--version", version,
                 "--target", target.id,
                 "--machine", machine.id,
-                "--build-type", type.id
+                "--build-type", type.id,
+                *gpuFlags(target).filter { it == ENABLE_GRAPHITE_DAWN }.toTypedArray()
             )
         }
 
@@ -101,6 +103,23 @@ abstract class BuildLocalSkiaTask : DefaultTask() {
 
         logger.lifecycle("Skia binaries built successfully")
         logger.lifecycle("Next: Run './gradlew publishToMavenLocal -Pskia.dir=<skia-repo-dir>' to publish")
+    }
+
+    /**
+     * The GPU flags Skia's CI (build_for_skiko.yml) builds the target with: Ganesh and Graphite
+     * as the separate skia_*_ext libraries skiko links, Graphite on Dawn where skiko has it.
+     */
+    private fun gpuFlags(target: SkiaTarget): Array<String> {
+        val dawn = target == SkiaTarget.MACOS || target == SkiaTarget.WINDOWS || target == SkiaTarget.WASM
+        return listOfNotNull(
+            "--gpu-as-extension",
+            "--enable-graphite".takeIf { target != SkiaTarget.WASM },
+            ENABLE_GRAPHITE_DAWN.takeIf { dawn },
+        ).toTypedArray()
+    }
+
+    private companion object {
+        const val ENABLE_GRAPHITE_DAWN = "--enable-graphite-dawn"
     }
 
     private fun runPythonScript(skiaRepoRoot: File, script: String, vararg args: String) {

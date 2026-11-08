@@ -137,6 +137,13 @@ private fun SkikoPublishingContext.configurePublishingRepositories() {
                 name = "BuildRepo"
                 url = project.rootProject.layout.buildDirectory.dir("repo").get().asFile.toURI()
             }
+            // Flow's release bundle: publishToFlowRepo writes a plain Maven layout into
+            // -Pflow.repo.dir (default <root>/build/flow-repo), never ~/.m2; CI zips it.
+            maven {
+                name = "FlowRepo"
+                url = (project.findProperty("flow.repo.dir")?.toString()?.let { project.rootProject.file(it) }
+                    ?: project.rootProject.layout.buildDirectory.dir("flow-repo").get().asFile).toURI()
+            }
             maven {
                 name = "ComposeRepo"
                 url = project.uri(skiko.composeRepoUrl)
