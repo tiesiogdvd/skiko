@@ -43,3 +43,43 @@ extern "C" JNIEXPORT void JNICALL Java_org_jetbrains_skia_BackendTextureKt__1nGL
     GrBackendTexture* backendTexture = reinterpret_cast<GrBackendTexture*>(static_cast<uintptr_t>(backendTexturePtr));
     GrBackendTextures::GLTextureParametersModified(backendTexture);
 }
+
+#ifdef SK_METAL
+#include "ganesh/mtl/GrMtlBackendSurface.h"
+#include "ganesh/mtl/GrMtlTypes.h"
+
+extern "C" JNIEXPORT jlong JNICALL Java_org_jetbrains_skia_BackendTextureKt__1nMakeMetal
+  (JNIEnv* env, jclass jclass, jint width, jint height, jboolean isMipmapped, jlong texturePtr) {
+    GrMTLHandle texture = reinterpret_cast<GrMTLHandle>(static_cast<uintptr_t>(texturePtr));
+    GrMtlTextureInfo textureInfo;
+    textureInfo.fTexture.retain(texture);
+    GrBackendTexture obj = GrBackendTextures::MakeMtl(
+        width,
+        height,
+        isMipmapped ? skgpu::Mipmapped::kYes : skgpu::Mipmapped::kNo,
+        textureInfo
+    );
+    GrBackendTexture* instance = new GrBackendTexture(obj);
+    return reinterpret_cast<jlong>(instance);
+}
+#endif // SK_METAL
+
+#ifdef SK_DIRECT3D
+#include "ganesh/d3d/GrD3DTypes.h"
+#include "ganesh/d3d/GrD3DBackendSurface.h"
+
+extern "C" JNIEXPORT jlong JNICALL Java_org_jetbrains_skia_BackendTextureKt__1nMakeDirect3DTexture
+  (JNIEnv* env, jclass jclass, jint width, jint height, jlong resourcePtr, jint format, jint sampleCnt, jint levelCnt) {
+    GrD3DTextureResourceInfo texResInfo = {};
+    ID3D12Resource* resource = reinterpret_cast<ID3D12Resource*>(static_cast<uintptr_t>(resourcePtr));
+    texResInfo.fResource.retain(resource);
+    texResInfo.fResourceState = D3D12_RESOURCE_STATE_COMMON;
+    texResInfo.fFormat = static_cast<DXGI_FORMAT>(format);
+    texResInfo.fSampleCount = static_cast<uint32_t>(sampleCnt);
+    texResInfo.fLevelCount = static_cast<uint32_t>(levelCnt);
+    GrBackendTexture* instance = new GrBackendTexture(
+        GrBackendTextures::MakeD3D(width, height, texResInfo)
+    );
+    return reinterpret_cast<jlong>(instance);
+}
+#endif // SK_DIRECT3D
