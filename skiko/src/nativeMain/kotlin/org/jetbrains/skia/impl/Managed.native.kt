@@ -29,7 +29,9 @@ actual abstract class Managed actual constructor(
     private val thunk: FinalizationThunk? = if (managed) {
         require(ptr != NullPointer) { "Managed ptr is nullptr" }
         require(finalizer != NullPointer) { "Managed finalizer is nullptr" }
-        val className = this::class.simpleName ?: "<kotlin>"
+        // The class's name is only for Stats, which is off unless built with it: reading it costs a type lookup and a
+        // string for every native object made (paints, paths, paragraphs: many a frame).
+        val className = if (Stats.enabled) this::class.simpleName ?: "<kotlin>" else ""
         Stats.onAllocated(className)
         FinalizationThunk(finalizer, className, ptr)
     } else null

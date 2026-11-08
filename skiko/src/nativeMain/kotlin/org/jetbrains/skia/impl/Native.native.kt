@@ -78,7 +78,7 @@ actual class InteropScope actual constructor() {
     actual fun toInterop(string: String?): InteropPointer {
         return if (string != null) {
             val pinned = convertToZeroTerminatedString(string).pin()
-            elements.add(pinned)
+            pinned().add(pinned)
             val result = pinned.addressOf(0).rawValue
             result
         } else {
@@ -89,7 +89,7 @@ actual class InteropScope actual constructor() {
     actual fun toInterop(array: ByteArray?): InteropPointer {
         return if (array != null && array.isNotEmpty()) {
             val pinned = array.pin()
-            elements.add(pinned)
+            pinned().add(pinned)
             val result = pinned.addressOf(0).rawValue
             result
         } else {
@@ -104,7 +104,7 @@ actual class InteropScope actual constructor() {
     actual fun toInterop(array: ShortArray?): InteropPointer {
         return if (array != null && array.isNotEmpty()) {
             val pinned = array.pin()
-            elements.add(pinned)
+            pinned().add(pinned)
             val result = pinned.addressOf(0).rawValue
             result
         } else {
@@ -119,7 +119,7 @@ actual class InteropScope actual constructor() {
     actual fun toInterop(array: IntArray?): InteropPointer {
         return if (array != null && array.isNotEmpty()) {
             val pinned = array.pin()
-            elements.add(pinned)
+            pinned().add(pinned)
             val result = pinned.addressOf(0).rawValue
             result
         } else {
@@ -134,7 +134,7 @@ actual class InteropScope actual constructor() {
     actual fun toInterop(array: LongArray?): InteropPointer {
         return if (array != null && array.isNotEmpty()) {
             val pinned = array.pin()
-            elements.add(pinned)
+            pinned().add(pinned)
             val result = pinned.addressOf(0).rawValue
             result
         } else {
@@ -147,7 +147,7 @@ actual class InteropScope actual constructor() {
     actual fun toInterop(array: FloatArray?): InteropPointer {
         return if (array != null && array.isNotEmpty()) {
             val pinned = array.pin()
-            elements.add(pinned)
+            pinned().add(pinned)
             val result = pinned.addressOf(0).rawValue
             result
         } else {
@@ -162,7 +162,7 @@ actual class InteropScope actual constructor() {
     actual fun toInterop(array: DoubleArray?): InteropPointer {
         return if (array != null && array.isNotEmpty()) {
             val pinned = array.pin()
-            elements.add(pinned)
+            pinned().add(pinned)
             val result = pinned.addressOf(0).rawValue
             result
         } else {
@@ -178,7 +178,7 @@ actual class InteropScope actual constructor() {
         return if (array != null && array.size > 0) {
             // We pass it as LongArray via boundary.
             val pinned = array.backing.pin()
-            elements.add(pinned)
+            pinned().add(pinned)
             val result = pinned.addressOf(0).rawValue
             result
         } else {
@@ -196,7 +196,7 @@ actual class InteropScope actual constructor() {
         val nativePointerArray = NativePointerArray(stringArray.size)
         stringArray.forEachIndexed { index, str ->
             val pin = convertToZeroTerminatedString(str).pin()
-            elements.add(pin)
+            pinned().add(pin)
             nativePointerArray[index] = pin.addressOf(0).rawValue
         }
         return toInterop(nativePointerArray)
@@ -233,7 +233,7 @@ actual class InteropScope actual constructor() {
     actual fun virtualBoolean(method: () -> Boolean) = callbackImpl(method)
 
     actual fun release() {
-        elements.fastForEach {
+        elements?.fastForEach {
             it.unpin()
         }
     }
@@ -243,7 +243,10 @@ actual class InteropScope actual constructor() {
         NativePtr.NULL.plus(ptr.toLong())
     } ?: NativePtr.NULL
 
-    private val elements = mutableListOf<Pinned<*>>()
+    // Made by the first pin: most calls pass only numbers and pointers, and a scope that pins nothing allocates no list.
+    private var elements: MutableList<Pinned<*>>? = null
+
+    private fun pinned(): MutableList<Pinned<*>> = elements ?: mutableListOf<Pinned<*>>().also { elements = it }
 }
 
 // Ugly! NativePtrArray in stdlib is unfortunately internal, don't have ctor and cannot be used.
