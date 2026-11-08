@@ -23,5 +23,18 @@ void RenderNodeContext::setLightingInfo(
     this->lightInfo = lightInfo;
 }
 
+RenderNodeContext* RenderNodeContext::twinContext() {
+    if (!this->twinCtx) {
+        this->twinCtx = sk_make_sp<RenderNodeContext>(this->measureDrawBounds, this->snapshotCache);
+        this->twinCtx->twin = true;
+        this->twinCtx->setLightingInfo(this->lightGeometry, this->lightInfo);
+        this->twinLightingGeneration = this->lightingGeneration;
+    } else if (this->twinLightingGeneration != this->lightingGeneration) {
+        this->twinCtx->setLightingInfo(this->lightGeometry, this->lightInfo);
+        this->twinLightingGeneration = this->lightingGeneration;
+    }
+    return this->twinCtx.get();
+}
+
 } // namespace node
 } // namespace skiko

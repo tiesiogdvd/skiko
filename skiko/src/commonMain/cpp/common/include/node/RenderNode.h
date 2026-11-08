@@ -28,6 +28,8 @@ struct RetainedLayer;
 class DamageWalk;
 class RenderNode;
 class OwnBoundsHierarchy;
+class RenderNodeTwins;
+struct TwinState;
 
 // What a damage walk (RenderNodeDamageTracker) last found about a node: the state it was drawn
 // in, and the device area its drawing covered.
@@ -132,6 +134,10 @@ public:
     // The damage walk's visit of this node (see RenderNodeDamageTracker).
     void walkDamage(SkCanvas *canvas, DamageWalk *walk);
 
+    // This node's twin for twins, brought up to date with this node and the nodes it draws (see
+    // RenderNodeTwins). The nodes' thread, while nothing draws the twins.
+    RenderNode* syncTwin(RenderNodeTwins *twins);
+
 protected:
     // SkDrawable
     SkRect onGetBounds() override;
@@ -194,8 +200,19 @@ private:
     // Whether a damage walk found that this node, drawn where canvas now is, draws nothing inside
     // canvas's clip, so that drawing it can be skipped.
     bool rejectedByDamage(SkCanvas *canvas) const;
+    // Render twins (see RenderNodeTwins): this node's properties onto its twin, its content (with the
+    // nodes it draws replaced by their twins), and the twin's side: content made for it, drawing
+    // dependencies (referenced already).
+    void copyPropertiesTo(RenderNode *twin);
+    void syncTwinContent(RenderNode *twin, RenderNodeTwins *twins);
+    void setTwinContent(sk_sp<SkDrawable> content, std::unordered_set<RenderNode *>&& twinDependencies);
 
     sk_sp<RenderNodeContext> context;
+
+    // Changes whenever the recorded content does (see RenderNodeTwins).
+    uint32_t contentGeneration;
+    // This node's twin and what it was last synced from; null before the first sync.
+    std::unique_ptr<TwinState> twinState;
 
     // Changes whenever this node's own state does (properties, layer paint, recorded content), and
     // whenever its properties or layer paint do.
