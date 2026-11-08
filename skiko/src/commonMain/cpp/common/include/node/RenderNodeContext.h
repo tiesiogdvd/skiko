@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <SkRefCnt.h>
 #include "Lighting.h"
 
@@ -18,6 +19,8 @@ public:
     bool shouldUseSnapshotCache() const { return this->snapshotCache; }
 
     const LightGeometry& getLightGeometry() const { return this->lightGeometry; }
+    // Changes whenever the lighting does, which redraws the shadows of every node.
+    uint32_t getLightingGeneration() const { return this->lightingGeneration; }
     const LightInfo& getLightInfo() const { return this->lightInfo; }
     void setLightingInfo(
         const LightGeometry& lightGeometry,
@@ -27,6 +30,7 @@ public:
 private:
     LightGeometry lightGeometry;
     LightInfo lightInfo;
+    uint32_t lightingGeneration = 0;
     bool measureDrawBounds;
     bool snapshotCache;
 };

@@ -335,6 +335,72 @@ class RenderNodeTest {
     }
 
     @Test
+    fun anAnimatedChildIsReferencedAndStopsInvalidatingItsParent() {
+        // A child that keeps changing after its parent's snapshot inlined it becomes a
+        // reference in that snapshot: the parent stops re-recording its snapshot each frame,
+        // and every frame still renders like a tree built with that frame's values.
+        val context = RenderNodeContext(snapshotCache = true)
+        val surface = Surface.makeRasterN32Premul(32, 16)
+        val fresh = Surface.makeRasterN32Premul(32, 16)
+        var contentDraws = 0
+        val counter = object : Drawable() {
+            override fun onDraw(canvas: Canvas?) { contentDraws++ }
+            override fun onGetBounds() = Rect(0f, 0f, 1f, 1f)
+        }
+        fun tree(translation: Float, alpha: Float, color: Int): Pair<RenderNode, RenderNode> {
+            val child = RenderNode(context)
+            child.bounds = Rect(0f, 0f, 8f, 8f)
+            child.translationX = translation
+            child.alpha = alpha
+            child.beginRecording().drawRect(0f, 0f, 8f, 8f, Paint().apply { this.color = color })
+            child.endRecording()
+            val parent = RenderNode(context)
+            parent.bounds = Rect(0f, 0f, 32f, 16f)
+            val canvas = parent.beginRecording()
+            canvas.drawRect(0f, 0f, 32f, 16f, Paint().apply { this.color = Color.GREEN })
+            canvas.drawDrawable(counter)
+            child.drawInto(canvas)
+            parent.endRecording()
+            return parent to child
+        }
+
+        val (parent, child) = tree(0f, 1f, Color.RED)
+        val drawsPerFrame = mutableListOf<Int>()
+        for (frame in 0 until 10) {
+            val translation = frame * 2f
+            val alpha = 1f - frame * 0.05f
+            val color = if (frame % 3 == 0) Color.RED else Color.BLUE
+            child.translationX = translation
+            child.alpha = alpha
+            if (frame % 3 != 1) {
+                child.beginRecording().drawRect(0f, 0f, 8f, 8f, Paint().apply { this.color = color })
+                child.endRecording()
+            }
+            val before = contentDraws
+            surface.canvas.clear(Color.TRANSPARENT)
+            parent.drawInto(surface.canvas)
+            drawsPerFrame += contentDraws - before
+
+            val expectedColor = if (frame % 3 == 1) (if ((frame - 1) % 3 == 0) Color.RED else Color.BLUE) else color
+            val (freshParent, freshChild) = tree(translation, alpha, expectedColor)
+            fresh.canvas.clear(Color.TRANSPARENT)
+            freshParent.drawInto(fresh.canvas)
+            assertContentEquals(
+                Bitmap.makeFromImage(fresh.makeImageSnapshot()).readPixels()!!,
+                Bitmap.makeFromImage(surface.makeImageSnapshot()).readPixels()!!,
+                "frame $frame"
+            )
+            freshParent.close()
+            freshChild.close()
+        }
+        // The first frames re-record the parent's snapshot; once the child is referenced
+        // only the frames' own live draws replay the parent's content.
+        assertTrue(drawsPerFrame.takeLast(5).all { it == 0 }, "parent snapshot re-recorded: $drawsPerFrame")
+
+        parent.close(); child.close(); counter.close(); surface.close(); fresh.close(); context.close()
+    }
+
+    @Test
     fun pictureCullRect() {
         val context = RenderNodeContext(measureDrawBounds = true)
         val node = RenderNode(context)

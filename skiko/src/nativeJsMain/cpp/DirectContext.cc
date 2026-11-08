@@ -1,3 +1,4 @@
+#include <chrono>
 #include "ganesh/GrDirectContext.h"
 #include "ganesh/gl/GrGLInterface.h"
 #include "common.h"
@@ -122,6 +123,45 @@ SKIKO_EXPORT void org_jetbrains_skia_DirectContext__1nSetResourceCacheLimit
   (KNativePointer ptr, KLong maxResourceBytes) {
     GrDirectContext* context = reinterpret_cast<GrDirectContext*>(ptr);
     context->setResourceCacheLimit((size_t) maxResourceBytes);
+}
+
+SKIKO_EXPORT void org_jetbrains_skia_DirectContext__1nPerformDeferredCleanup
+  (KNativePointer ptr, KLong msNotUsed, KBoolean scratchResourcesOnly) {
+    GrDirectContext* context = reinterpret_cast<GrDirectContext*>(ptr);
+    context->performDeferredCleanup(std::chrono::milliseconds(msNotUsed),
+        scratchResourcesOnly ? GrPurgeResourceOptions::kScratchResourcesOnly : GrPurgeResourceOptions::kAllResources);
+}
+
+SKIKO_EXPORT void org_jetbrains_skia_DirectContext__1nFreeGpuResources
+  (KNativePointer ptr) {
+    GrDirectContext* context = reinterpret_cast<GrDirectContext*>(ptr);
+    context->freeGpuResources();
+}
+
+SKIKO_EXPORT void org_jetbrains_skia_DirectContext__1nPurgeUnlockedResources
+  (KNativePointer ptr, KBoolean scratchResourcesOnly) {
+    GrDirectContext* context = reinterpret_cast<GrDirectContext*>(ptr);
+    context->purgeUnlockedResources(
+        scratchResourcesOnly ? GrPurgeResourceOptions::kScratchResourcesOnly : GrPurgeResourceOptions::kAllResources);
+}
+
+SKIKO_EXPORT void org_jetbrains_skia_DirectContext__1nPurgeUnlockedResourcesBytes
+  (KNativePointer ptr, KLong bytesToPurge, KBoolean preferScratchResources) {
+    GrDirectContext* context = reinterpret_cast<GrDirectContext*>(ptr);
+    context->purgeUnlockedResources((size_t) bytesToPurge, preferScratchResources);
+}
+
+// which: 0 = bytes in the cache, 1 = resources in the cache, 2 = purgeable bytes
+SKIKO_EXPORT KLong org_jetbrains_skia_DirectContext__1nGetResourceCacheUsage
+  (KNativePointer ptr, KInt which) {
+    GrDirectContext* context = reinterpret_cast<GrDirectContext*>(ptr);
+    if (which == 2) {
+        return (KLong) context->getResourceCachePurgeableBytes();
+    }
+    int count = 0;
+    size_t bytes = 0;
+    context->getResourceCacheUsage(&count, &bytes);
+    return which == 1 ? (KLong) count : (KLong) bytes;
 }
 
 GrSyncCpu grSyncCpuFromBool(bool syncCpu) {

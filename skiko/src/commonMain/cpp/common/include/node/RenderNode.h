@@ -1,4 +1,5 @@
 #pragma once
+#include <memory>
 #include <optional>
 #include <unordered_set>
 #include <SkBBHFactory.h>
@@ -20,6 +21,8 @@ namespace skiko {
 namespace node {
 
 class RenderNodeContext;
+class LayerBatch;
+struct RetainedLayer;
 
 class RenderNode : public SkDrawable {
 public:
@@ -71,6 +74,19 @@ public:
 
     SkFlattenable::Type getFlattenableType() const override;
 
+    // Whether this node's layer can be drawn from a frame's layer atlas instead of a
+    // layer of its own: a layer paint whose restore is a plain composite of the layer's
+    // pixels (no image filter, and nothing that touches pixels outside the content).
+    bool isBatchableLayer() const { return this->layerBatchable; }
+    // Draws what this node draws inside its layer: the recorded content.
+    void drawLayerContent(SkCanvas *canvas);
+    // Whether a snapshot recording that reaches this node records a reference to it, drawn
+    // live when the snapshot is replayed, instead of inlining its drawing. True for a node
+    // whose drawing changes after it was inlined (an animated node), one whose drawing
+    // depends on where it is replayed (a shadow), one the layer atlas draws, and one drawing
+    // other nodes through an alpha filter.
+    bool shouldBeReferenced() const;
+
 protected:
     // SkDrawable
     SkRect onGetBounds() override;
@@ -106,8 +122,24 @@ private:
     void updateDependencies();
     void releaseDependencies();
     void updateSnapshot();
+    void updateLiveSnapshot();
     void invalidateSnapshot(uint32_t changes);
     void drawShadow(SkCanvas *canvas, const LightGeometry& lightGeometry, const LightInfo& lightInfo);
+    // The node's drawing onto a canvas, with [batch] being the frame's layer atlas, if any.
+    void drawNode(SkCanvas *canvas, LayerBatch *batch);
+    // Draws this node's layer from the texture it keeps while its content and placement stay
+    // the same; false where the layer has to be drawn otherwise.
+    bool drawRetainedLayer(SkCanvas *canvas, const SkRect& rect);
+    // Whether the retained layer will likely be drawn where canvas is (the collect pass's guess).
+    bool retainedLayerMatches(SkCanvas *canvas) const;
+    void releaseRetainedLayer();
+    // Tells the observers that what they draw of this node changed (see subtreeGeneration).
+    void relaySubtreeChange();
+    // The layer atlas's first pass: finds the layers this node's subtree will draw and where.
+    void collectLayers(SkCanvas *canvas, LayerBatch *batch);
+    // Whether this node or a node it draws (outside any layer) has a batchable layer.
+    bool hasBatchableLayerInSubtree();
+    void markLayerInfoDirty();
     void setCameraLocation(float x, float y, float z);
 
     sk_sp<RenderNodeContext> context;
@@ -115,7 +147,13 @@ private:
     SkBBHFactory *bbhFactory;
     SkPictureRecorder recorder;
     sk_sp<SkDrawable> contentCache;
+    // The content with every node it draws inlined; only drawn where the content is replayed
+    // through an alpha filter canvas or into a picture of the node, where references would
+    // not see the filter or would freeze anyway.
     sk_sp<SkPicture> contentSnapshot;
+    // The content with the nodes it draws inlined, except the ones that should be
+    // referenced (see shouldBeReferenced), which it draws live.
+    sk_sp<SkDrawable> contentLiveSnapshot;
     // Whether the recorded content replays correctly under any transform, and so may be
     // snapshotted at all. Cleared by drawing whose result depends on the transform it is
     // replayed under -- today only a shadow, whose spot geometry follows the occluder's
@@ -127,10 +165,30 @@ private:
     // propagate once instead of once per path. Cleared when the node is drawn (they inline
     // it afresh) and when preventsObserverSnapshot() flips (they must re-derive).
     bool observersNotified;
+    // Whether a snapshot recording inlined this node since its observers were last told
+    // of a change, and how many changes followed such an inlining: two make the node
+    // volatile, and from then on referenced rather than inlined.
+    bool inlinedSinceNotify;
+    uint8_t changesAfterInline;
+    bool volatileNode;
 
     std::unordered_set<RenderNode *> dependencies, observers;
 
     std::optional<SkPaint> layerPaint;
+    bool layerBatchable;
+    // Changes when the layer paint changes in more than its alpha, color filter or blend
+    // mode (which a retained layer applies when compositing).
+    uint32_t layerPaintGeneration;
+    // Changes whenever what this node draws inside its layer changes: its own content, or
+    // anything about a node it draws (relayed through the observers).
+    uint32_t subtreeGeneration;
+    // Whether the observers were told of a subtree change since this node was last drawn.
+    bool subtreeChangeRelayed;
+    std::unique_ptr<RetainedLayer> retainedLayer;
+    // Cached hasBatchableLayerInSubtree(), valid unless layerInfoDirty. A dirty node's
+    // observers are dirty too (see markLayerInfoDirty).
+    bool layerInfoDirty;
+    bool subtreeHasBatchableLayer;
     SkRect bounds;
     SkPoint pivot;
     float alpha;

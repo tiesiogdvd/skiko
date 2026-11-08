@@ -11,6 +11,12 @@ void RenderNodeContext::setLightingInfo(
     const LightGeometry& lightGeometry,
     const LightInfo& lightInfo
 ) {
+    if (this->lightGeometry.center != lightGeometry.center ||
+        this->lightGeometry.radius != lightGeometry.radius ||
+        this->lightInfo.ambientShadowAlpha != lightInfo.ambientShadowAlpha ||
+        this->lightInfo.spotShadowAlpha != lightInfo.spotShadowAlpha) {
+        this->lightingGeneration++;
+    }
     this->lightGeometry = lightGeometry;
     this->lightInfo = lightInfo;
 }

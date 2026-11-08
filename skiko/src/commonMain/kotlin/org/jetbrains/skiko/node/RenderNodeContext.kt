@@ -20,13 +20,22 @@ class RenderNodeContext internal constructor(ptr: NativePointer, managed: Boolea
      * @param snapshotCache whether the nodes created with this context record their content into an
      * immutable picture once and replay it until the content changes, instead of re-recording it for
      * every frame. It trades memory for recording time, so it pays off for trees that are drawn far
-     * more often than they change, and costs for trees that are re-recorded every frame. A node that
-     * casts a shadow, and every node drawing it, replays its content directly either way, because
-     * the shadow it draws depends on where it is replayed.
+     * more often than they change, and costs for trees that are re-recorded every frame.
      *
      * Snapshotting is a property of the whole tree rather than of a single node: a snapshot inlines
      * the drawing of the nodes below it, so those nodes have to report their changes upwards for it
-     * to be dropped in time.
+     * to be dropped in time. A node that keeps changing after a snapshot inlined it (an animated
+     * one), one that casts a shadow (which depends on where it is replayed), one with a layer, and
+     * one drawing other nodes under a modulated alpha are referenced from the snapshots instead and
+     * drawn live, so their changes leave the snapshots above them valid.
+     *
+     * On a GPU canvas the nodes also draw their layers without a render pass each: the layers a
+     * drawing reaches outside other layers are rendered together into one atlas texture first, and
+     * a layer whose content and placement stay the same from one frame to the next keeps its texture
+     * (an image filter layer, its filtered result) and is only composited again. Both reproduce
+     * saveLayer's pixels. `SKIKO_RENDER_NODE_LAYER_ATLAS=0` and `SKIKO_RENDER_NODE_LAYER_RETAIN=0` in
+     * the environment turn them off, `SKIKO_RENDER_NODE_LAYER_RETAIN_MB` bounds the retained
+     * textures (96 by default), and `SKIKO_RENDER_NODE_LAYER_ATLAS=log` reports what they do.
      */
     constructor(
         measureDrawBounds: Boolean = false,

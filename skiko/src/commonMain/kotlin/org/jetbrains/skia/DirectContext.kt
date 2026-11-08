@@ -201,7 +201,87 @@ class DirectContext internal constructor(ptr: NativePointer, managed: Boolean = 
                 reachabilityBarrier(this)
             }
         }
+
+    /**
+     * Frees the GPU resources no work has used for [msNotUsed] milliseconds, and handles finished GPU work. With
+     * [scratchResourcesOnly], only scratch resources (layers, offscreens Skia made for itself) go; resources an image
+     * or a path keyed in the cache stay.
+     *
+     * For more information refer to skia GrDirectContext::performDeferredCleanup.
+     */
+    fun performDeferredCleanup(msNotUsed: Long, scratchResourcesOnly: Boolean = false) {
+        require(msNotUsed >= 0L) { "msNotUsed is negative" }
+        try {
+            Stats.onNativeCall()
+            DirectContext_nPerformDeferredCleanup(_ptr, msNotUsed, scratchResourcesOnly)
+        } finally {
+            reachabilityBarrier(this)
+        }
+    }
+
+    /** Frees every GPU resource the context holds that the GPU isn't still reading (GrDirectContext::freeGpuResources). */
+    fun freeGpuResources() {
+        try {
+            Stats.onNativeCall()
+            DirectContext_nFreeGpuResources(_ptr)
+        } finally {
+            reachabilityBarrier(this)
+        }
+    }
+
+    /**
+     * Frees the cache's unlocked resources (those no object holds), or only its scratch ones with
+     * [scratchResourcesOnly] (GrDirectContext::purgeUnlockedResources).
+     */
+    fun purgeUnlockedResources(scratchResourcesOnly: Boolean = false) {
+        try {
+            Stats.onNativeCall()
+            DirectContext_nPurgeUnlockedResources(_ptr, scratchResourcesOnly)
+        } finally {
+            reachabilityBarrier(this)
+        }
+    }
+
+    /**
+     * Frees at least [bytesToPurge] bytes of unlocked resources where there are that many, least recently used
+     * first, scratch ones first with [preferScratchResources] (GrDirectContext::purgeUnlockedResources). Skia
+     * subtracts [bytesToPurge] from the cache's current bytes, so a figure above [resourceCacheUsageBytes] frees
+     * nothing: pass at most that.
+     */
+    fun purgeUnlockedResources(bytesToPurge: Long, preferScratchResources: Boolean) {
+        require(bytesToPurge >= 0L) { "bytesToPurge is negative" }
+        try {
+            Stats.onNativeCall()
+            DirectContext_nPurgeUnlockedResourcesBytes(_ptr, bytesToPurge, preferScratchResources)
+        } finally {
+            reachabilityBarrier(this)
+        }
+    }
+
+    /** Bytes of GPU memory the resource cache holds, budgeted or not (GrDirectContext::getResourceCacheUsage). */
+    val resourceCacheUsageBytes: Long
+        get() = resourceCacheUsage(RESOURCE_CACHE_BYTES)
+
+    /** Resources the resource cache holds (GrDirectContext::getResourceCacheUsage). */
+    val resourceCacheUsageCount: Int
+        get() = resourceCacheUsage(RESOURCE_CACHE_COUNT).toInt()
+
+    /** Bytes of the resource cache's resources that could be purged now (GrDirectContext::getResourceCachePurgeableBytes). */
+    val resourceCachePurgeableBytes: Long
+        get() = resourceCacheUsage(RESOURCE_CACHE_PURGEABLE_BYTES)
+
+    private fun resourceCacheUsage(which: Int): Long =
+        try {
+            Stats.onNativeCall()
+            DirectContext_nGetResourceCacheUsage(_ptr, which)
+        } finally {
+            reachabilityBarrier(this)
+        }
 }
+
+private const val RESOURCE_CACHE_BYTES = 0
+private const val RESOURCE_CACHE_COUNT = 1
+private const val RESOURCE_CACHE_PURGEABLE_BYTES = 2
 
 fun <R> DirectContext.useContext(block: (ctx: DirectContext) -> R): R = use {
     block(this).also { abandon() }
@@ -231,6 +311,36 @@ private external fun DirectContext_nGetResourceCacheLimit(ptr: NativePointer): L
 // Native call path: GrDirectContext::setResourceCacheLimit -> GrResourceCache::setLimit -> purgeAsNeeded
 @ForceNativeThreadState
 private external fun DirectContext_nSetResourceCacheLimit(ptr: NativePointer, maxResourceBytes: Long)
+
+@ExternalSymbolName("org_jetbrains_skia_DirectContext__1nPerformDeferredCleanup")
+// Needs ForceNativeThreadState: checks finished GPU work and frees Metal resources through the resource cache.
+// Native call path: GrDirectContext::performDeferredCleanup -> GrResourceCache::purgeResourcesNotUsedSince
+@ForceNativeThreadState
+private external fun DirectContext_nPerformDeferredCleanup(ptr: NativePointer, msNotUsed: Long, scratchResourcesOnly: Boolean)
+
+@ExternalSymbolName("org_jetbrains_skia_DirectContext__1nFreeGpuResources")
+// Needs ForceNativeThreadState: flushes and frees Metal resources through the resource cache.
+// Native call path: GrDirectContext::freeGpuResources -> GrResourceCache::purgeUnlockedResources
+@ForceNativeThreadState
+private external fun DirectContext_nFreeGpuResources(ptr: NativePointer)
+
+@ExternalSymbolName("org_jetbrains_skia_DirectContext__1nPurgeUnlockedResources")
+// Needs ForceNativeThreadState: frees Metal resources through the resource cache.
+// Native call path: GrDirectContext::purgeUnlockedResources -> GrResourceCache::purgeUnlockedResources
+@ForceNativeThreadState
+private external fun DirectContext_nPurgeUnlockedResources(ptr: NativePointer, scratchResourcesOnly: Boolean)
+
+@ExternalSymbolName("org_jetbrains_skia_DirectContext__1nPurgeUnlockedResourcesBytes")
+// Needs ForceNativeThreadState: frees Metal resources through the resource cache.
+// Native call path: GrDirectContext::purgeUnlockedResources -> GrResourceCache::purgeUnlockedResources
+@ForceNativeThreadState
+private external fun DirectContext_nPurgeUnlockedResourcesBytes(ptr: NativePointer, bytesToPurge: Long, preferScratchResources: Boolean)
+
+@ExternalSymbolName("org_jetbrains_skia_DirectContext__1nGetResourceCacheUsage")
+// Needs ForceNativeThreadState: in debug builds, can wait for another thread that is using the same GPU context.
+// Native call path: GrDirectContext::getResourceCacheUsage -> SingleOwner::enter -> SkMutex::acquire
+@ForceNativeThreadState
+private external fun DirectContext_nGetResourceCacheUsage(ptr: NativePointer, which: Int): Long
 
 @ExternalSymbolName("org_jetbrains_skia_DirectContext__1nMakeGL")
 // Needs ForceNativeThreadState: creates a GPU context and queries OpenGL capabilities, which makes GL calls.
