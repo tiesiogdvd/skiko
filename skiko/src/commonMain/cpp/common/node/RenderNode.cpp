@@ -10,6 +10,9 @@
 #include <SkBlendMode.h>
 #include <SkColorFilter.h>
 #include <SkImage.h>
+#include <SkImageFilter.h>
+#include <SkTextBlob.h>
+#include <SkVertices.h>
 #include <SkMaskFilter.h>
 #include <SkPathEffect.h>
 #include <SkNoDrawCanvas.h>
@@ -17,12 +20,14 @@
 #include <SkPathBuilder.h>
 #include <SkPaintFilterCanvas.h>
 #include <SkPicture.h>
+#include <SkRegion.h>
 #include <SkShadowUtils.h>
 #include <SkSurface.h>
 #include "src/core/SkCanvasPriv.h"
 #include "src/core/SkDevice.h"
 #include "node/RenderNode.h"
 #include "node/RenderNodeContext.h"
+#include "node/RenderNodeDamage.h"
 
 namespace skiko {
 namespace node {
@@ -590,6 +595,40 @@ thread_local LayerBatch* LayerBatch::current = nullptr;
 
 
 // ---------------------------------------------------------------------------------------------
+// Own-content bounds, for damage tracking.
+//
+// A recording made while the context tracks damage measures the device-independent bounds of what
+// it draws itself: Skia computes every operation's bounds for a bounding hierarchy, and this one
+// only keeps their union and never culls (search returns every operation, as a recording without a
+// hierarchy replays). The nodes the recording draws report empty bounds to it (see onGetBounds):
+// the damage walk takes their bounds from them, as they are where they are drawn.
+// ---------------------------------------------------------------------------------------------
+
+class OwnBoundsHierarchy : public SkBBoxHierarchy {
+public:
+    void insert(const SkRect rects[], int count) override {
+        for (int i = 0; i < count; i++) {
+            this->bounds.join(rects[i]);
+        }
+        this->count = count;
+    }
+    void search(const SkRect&, std::vector<int>* results) const override {
+        results->resize(this->count);
+        for (int i = 0; i < this->count; i++) {
+            (*results)[i] = i;
+        }
+    }
+    size_t bytesUsed() const override { return sizeof(*this); }
+
+    SkRect bounds = SkRect::MakeEmpty();
+    int count = 0;
+};
+
+// Whether each content recording in progress on this thread, innermost last, measures its own
+// drawing only.
+static thread_local std::vector<bool> recordingMeasuresOwnBounds;
+
+// ---------------------------------------------------------------------------------------------
 // Retained layers.
 //
 // A layer whose content and placement do not change between frames (a static page fading in,
@@ -643,10 +682,13 @@ struct RetainedLayerKey {
     const SkColorSpace* colorSpace = nullptr;
 
     bool operator==(const RetainedLayerKey& other) const {
+        return this->bounds == other.bounds && this->sameExceptBounds(other);
+    }
+    bool sameExceptBounds(const RetainedLayerKey& other) const {
         float a[16], b[16];
         this->ctm.getColMajor(a);
         other.ctm.getColMajor(b);
-        return this->context == other.context && this->bounds == other.bounds &&
+        return this->context == other.context &&
                this->content == other.content && this->paint == other.paint &&
                this->lighting == other.lighting && this->colorType == other.colorType &&
                this->colorSpace == other.colorSpace && memcmp(a, b, sizeof(a)) == 0;
@@ -733,8 +775,502 @@ static bool sameRetainedLayerPaint(const SkPaint& a, const SkPaint& b) {
            a.getMaskFilter() == b.getMaskFilter() && a.getPathEffect() == b.getPathEffect();
 }
 
+// ---------------------------------------------------------------------------------------------
+// Content diff, for damage tracking.
+//
+// A node recorded anew damages only the operations that changed, not its whole drawing (a time
+// label in a page that draws without a layer of its own): its recording is replayed onto a canvas
+// that hashes each operation with the transform and clip state it draws in and measures its
+// bounds, and the operations between the longest unchanged prefix and suffix of the old and new
+// recordings are the change. A changed operation of unknown bounds makes the change unknown (the
+// node's whole drawing); a drawn node in it damages where a walk last found it (it moved, or is
+// gone) and, drawn anew, its whole drawing.
+// ---------------------------------------------------------------------------------------------
+
+static inline uint64_t mixHash(uint64_t h, uint64_t v) {
+    h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+    return h * 0xff51afd7ed558ccdULL;
+}
+
+static uint64_t hashBytes(uint64_t h, const void* data, size_t size) {
+    const uint8_t* bytes = static_cast<const uint8_t*>(data);
+    size_t i = 0;
+    for (; i + 8 <= size; i += 8) {
+        uint64_t v;
+        memcpy(&v, bytes + i, 8);
+        h = mixHash(h, v);
+    }
+    uint64_t rest = 0;
+    memcpy(&rest, bytes + i, size - i);
+    return mixHash(h, rest ^ size);
+}
+
+template <typename T>
+static uint64_t hashValue(uint64_t h, const T& value) {
+    return hashBytes(h, &value, sizeof(T));
+}
+
+static uint64_t hashPointer(uint64_t h, const void* pointer) {
+    return mixHash(h, reinterpret_cast<uintptr_t>(pointer));
+}
+
+static uint64_t hashPaint(uint64_t h, const SkPaint& paint) {
+    SkColor4f color = paint.getColor4f();
+    h = hashValue(h, color);
+    h = hashPointer(h, paint.getShader());
+    h = hashPointer(h, paint.getColorFilter());
+    h = hashPointer(h, paint.getBlender());
+    h = hashPointer(h, paint.getImageFilter());
+    h = hashPointer(h, paint.getMaskFilter());
+    h = hashPointer(h, paint.getPathEffect());
+    h = mixHash(h, (static_cast<uint64_t>(paint.getStyle()) << 8) | (static_cast<uint64_t>(paint.getStrokeCap()) << 4) |
+                       (static_cast<uint64_t>(paint.getStrokeJoin()) << 2) | (paint.isAntiAlias() ? 2 : 0) |
+                       (paint.isDither() ? 1 : 0));
+    float stroke[2] = { paint.getStrokeWidth(), paint.getStrokeMiter() };
+    return hashValue(h, stroke);
+}
+
+static uint64_t hashPath(uint64_t h, const SkPath& path) {
+    h = mixHash(h, static_cast<uint64_t>(path.getFillType()));
+    SkSpan<const SkPoint> points = path.points();
+    h = hashBytes(h, points.data(), points.size() * sizeof(SkPoint));
+    SkSpan<const SkPathVerb> verbs = path.verbs();
+    h = hashBytes(h, verbs.data(), verbs.size() * sizeof(SkPathVerb));
+    SkSpan<const float> weights = path.conicWeights();
+    return hashBytes(h, weights.data(), weights.size() * sizeof(float));
+}
+
+static uint64_t hashSampling(uint64_t h, const SkSamplingOptions& sampling) {
+    return hashValue(h, sampling);
+}
+
+class ContentDigestCanvas : public SkNoDrawCanvas {
+public:
+    explicit ContentDigestCanvas(std::vector<ContentOp>* ops)
+        : SkNoDrawCanvas(SkIRect::MakeLTRB(static_cast<int>(UNKNOWN_BOUNDS_MIN_VALUE), static_cast<int>(UNKNOWN_BOUNDS_MIN_VALUE),
+                                           static_cast<int>(UNKNOWN_BOUNDS_MAX_VALUE), static_cast<int>(UNKNOWN_BOUNDS_MAX_VALUE))),
+          ops(ops) {}
+
+protected:
+    // State: the transform is hashed with each operation; clips and layers into a running state.
+    void willSave() override { this->saved.push_back({ this->state, this->spreading }); }
+    SaveLayerStrategy getSaveLayerStrategy(const SaveLayerRec& rec) override {
+        this->saved.push_back({ this->state, this->spreading });
+        uint64_t h = mixHash(0x5a5e1a7e, rec.fSaveLayerFlags);
+        if (rec.fBounds) h = hashValue(h, *rec.fBounds);
+        if (rec.fPaint) h = hashPaint(h, *rec.fPaint);
+        h = hashPointer(h, rec.fBackdrop);
+        // The layer as an operation (a change to it changes what it composites), and its paint as
+        // state for what draws inside it; a filter spreads what draws inside over unknown bounds.
+        this->add(h, rec.fBounds, rec.fPaint);
+        this->state = mixHash(this->state, h);
+        if ((rec.fPaint && rec.fPaint->getImageFilter()) || rec.fBackdrop) {
+            this->spreading = true;
+        }
+        return kNoLayer_SaveLayerStrategy;
+    }
+    bool onDoSaveBehind(const SkRect* bounds) override {
+        this->saved.push_back({ this->state, this->spreading });
+        this->add(mixHash(0xbe41d, 0), nullptr, nullptr);
+        return false;
+    }
+    void willRestore() override {
+        if (!this->saved.empty()) {
+            this->state = this->saved.back().first;
+            this->spreading = this->saved.back().second;
+            this->saved.pop_back();
+        }
+    }
+    void onClipRect(const SkRect& rect, SkClipOp op, ClipEdgeStyle edge) override {
+        this->clipState(hashValue(mixHash(1, static_cast<uint64_t>(op) * 2 + edge), rect));
+        SkNoDrawCanvas::onClipRect(rect, op, edge);
+    }
+    void onClipRRect(const SkRRect& rrect, SkClipOp op, ClipEdgeStyle edge) override {
+        this->clipState(hashValue(mixHash(2, static_cast<uint64_t>(op) * 2 + edge), rrect));
+        SkNoDrawCanvas::onClipRRect(rrect, op, edge);
+    }
+    void onClipPath(const SkPath& path, SkClipOp op, ClipEdgeStyle edge) override {
+        this->clipState(hashPath(mixHash(3, static_cast<uint64_t>(op) * 2 + edge), path));
+        SkNoDrawCanvas::onClipPath(path, op, edge);
+    }
+    void onClipShader(sk_sp<SkShader> shader, SkClipOp op) override {
+        this->clipState(hashPointer(mixHash(4, static_cast<uint64_t>(op)), shader.get()));
+        SkNoDrawCanvas::onClipShader(std::move(shader), op);
+    }
+    void onClipRegion(const SkRegion& region, SkClipOp op) override {
+        uint64_t h = mixHash(5, static_cast<uint64_t>(op));
+        for (SkRegion::Iterator it(region); !it.done(); it.next()) h = hashValue(h, it.rect());
+        this->clipState(h);
+        SkNoDrawCanvas::onClipRegion(region, op);
+    }
+    void onResetClip() override {
+        this->clipState(6);
+        SkNoDrawCanvas::onResetClip();
+    }
+
+    void onDrawPaint(const SkPaint& paint) override { this->add(hashPaint(10, paint), nullptr, nullptr); }
+    void onDrawBehind(const SkPaint& paint) override { this->add(hashPaint(11, paint), nullptr, nullptr); }
+    void onDrawRect(const SkRect& rect, const SkPaint& paint) override {
+        this->add(hashPaint(hashValue(12, rect), paint), &rect, &paint);
+    }
+    void onDrawRRect(const SkRRect& rrect, const SkPaint& paint) override {
+        this->add(hashPaint(hashValue(13, rrect), paint), &rrect.getBounds(), &paint);
+    }
+    void onDrawDRRect(const SkRRect& outer, const SkRRect& inner, const SkPaint& paint) override {
+        this->add(hashPaint(hashValue(hashValue(14, outer), inner), paint), &outer.getBounds(), &paint);
+    }
+    void onDrawOval(const SkRect& rect, const SkPaint& paint) override {
+        this->add(hashPaint(hashValue(15, rect), paint), &rect, &paint);
+    }
+    void onDrawArc(const SkRect& oval, SkScalar start, SkScalar sweep, bool center, const SkPaint& paint) override {
+        float arc[3] = { start, sweep, center ? 1.0f : 0.0f };
+        this->add(hashPaint(hashValue(hashValue(16, oval), arc), paint), &oval, &paint);
+    }
+    void onDrawPath(const SkPath& path, const SkPaint& paint) override {
+        SkRect bounds = path.getBounds();
+        this->add(hashPaint(hashPath(17, path), paint), path.isInverseFillType() ? nullptr : &bounds, &paint);
+    }
+    void onDrawRegion(const SkRegion& region, const SkPaint& paint) override {
+        uint64_t h = 18;
+        for (SkRegion::Iterator it(region); !it.done(); it.next()) h = hashValue(h, it.rect());
+        SkRect bounds = SkRect::Make(region.getBounds());
+        this->add(hashPaint(h, paint), &bounds, &paint);
+    }
+    void onDrawPoints(PointMode mode, size_t count, const SkPoint points[], const SkPaint& paint) override {
+        SkRect bounds;
+        bounds.setBounds(SkSpan(points, count));
+        SkPaint stroked(paint);
+        stroked.setStyle(SkPaint::kStroke_Style);
+        this->add(hashPaint(hashBytes(mixHash(19, mode), points, count * sizeof(SkPoint)), paint), &bounds, &stroked);
+    }
+    void onDrawTextBlob(const SkTextBlob* blob, SkScalar x, SkScalar y, const SkPaint& paint) override {
+        float origin[2] = { x, y };
+        uint64_t h = hashValue(20, origin);
+        SkTextBlob::Iter it(*blob);
+        SkTextBlob::Iter::ExperimentalRun run;
+        while (it.experimentalNext(&run)) {
+            const SkFont& font = run.font;
+            h = hashPointer(h, font.getTypeface());
+            float metrics[3] = { font.getSize(), font.getScaleX(), font.getSkewX() };
+            h = hashValue(h, metrics);
+            h = mixHash(h, (static_cast<uint64_t>(font.getEdging()) << 8) | (static_cast<uint64_t>(font.getHinting()) << 4) |
+                               (font.isEmbolden() ? 8 : 0) | (font.isSubpixel() ? 4 : 0) | (font.isLinearMetrics() ? 2 : 0) |
+                               (font.isBaselineSnap() ? 1 : 0));
+            h = hashBytes(h, run.glyphs, run.count * sizeof(SkGlyphID));
+            h = hashBytes(h, run.positions, run.count * sizeof(SkPoint));
+        }
+        SkRect bounds = blob->bounds().makeOffset(x, y);
+        this->add(hashPaint(h, paint), &bounds, &paint);
+    }
+    void onDrawImage2(const SkImage* image, SkScalar x, SkScalar y, const SkSamplingOptions& sampling,
+                      const SkPaint* paint) override {
+        float origin[2] = { x, y };
+        SkRect bounds = SkRect::MakeXYWH(x, y, image->width(), image->height());
+        uint64_t h = hashSampling(hashValue(mixHash(21, image->uniqueID()), origin), sampling);
+        this->add(paint ? hashPaint(h, *paint) : h, &bounds, paint);
+    }
+    void onDrawImageRect2(const SkImage* image, const SkRect& src, const SkRect& dst, const SkSamplingOptions& sampling,
+                          const SkPaint* paint, SrcRectConstraint constraint) override {
+        uint64_t h = hashSampling(hashValue(hashValue(mixHash(mixHash(22, image->uniqueID()), constraint), src), dst), sampling);
+        this->add(paint ? hashPaint(h, *paint) : h, &dst, paint);
+    }
+    void onDrawImageLattice2(const SkImage* image, const Lattice&, const SkRect& dst, SkFilterMode,
+                             const SkPaint* paint) override {
+        this->unique(&dst, paint);
+    }
+    void onDrawVerticesObject(const SkVertices* vertices, SkBlendMode mode, const SkPaint& paint) override {
+        this->add(hashPaint(mixHash(mixHash(23, vertices->uniqueID()), static_cast<uint64_t>(mode)), paint), &vertices->bounds(), &paint);
+    }
+    void onDrawPicture(const SkPicture* picture, const SkMatrix* matrix, const SkPaint* paint) override {
+        uint64_t h = mixHash(24, picture->uniqueID());
+        SkRect bounds = picture->cullRect();
+        if (matrix) {
+            h = hashValue(h, *matrix);
+            bounds = matrix->mapRect(bounds);
+        }
+        this->add(paint ? hashPaint(h, *paint) : h, &bounds, paint);
+    }
+    void onDrawDrawable(SkDrawable* drawable, const SkMatrix* matrix) override {
+        if (drawable->getFlattenableType() != kRenderNode_Type) {
+            SkRect bounds = matrix ? matrix->mapRect(drawable->getBounds()) : drawable->getBounds();
+            this->unique(&bounds, nullptr);
+            return;
+        }
+        uint64_t h = hashPointer(25, drawable);
+        if (matrix) h = hashValue(h, *matrix);
+        this->add(h, nullptr, nullptr, static_cast<RenderNode*>(drawable));
+    }
+    void onDrawShadowRec(const SkPath& path, const SkDrawShadowRec& rec) override { this->unique(nullptr, nullptr); }
+    void onDrawPatch(const SkPoint[12], const SkColor[4], const SkPoint[4], SkBlendMode, const SkPaint&) override {
+        this->unique(nullptr, nullptr);
+    }
+    void onDrawAtlas2(const SkImage*, const SkRSXform[], const SkRect[], const SkColor[], int, SkBlendMode,
+                      const SkSamplingOptions&, const SkRect*, const SkPaint*) override {
+        this->unique(nullptr, nullptr);
+    }
+    void onDrawEdgeAAQuad(const SkRect&, const SkPoint[4], QuadAAFlags, const SkColor4f&, SkBlendMode) override {
+        this->unique(nullptr, nullptr);
+    }
+    void onDrawEdgeAAImageSet2(const ImageSetEntry[], int, const SkPoint[], const SkMatrix[], const SkSamplingOptions&,
+                               const SkPaint*, SrcRectConstraint) override {
+        this->unique(nullptr, nullptr);
+    }
+    void onDrawGlyphRunList(const sktext::GlyphRunList&, const SkPaint&) override { this->unique(nullptr, nullptr); }
+    void onDrawSlug(const sktext::gpu::Slug*, const SkPaint&) override { this->unique(nullptr, nullptr); }
+    void onDrawMesh(const SkMesh&, sk_sp<SkBlender>, const SkPaint&) override { this->unique(nullptr, nullptr); }
+
+private:
+    void clipState(uint64_t h) { this->state = mixHash(this->state, h); }
+
+    // An operation that counts as changed in every recording.
+    void unique(const SkRect* bounds, const SkPaint* paint) {
+        static std::atomic<uint64_t> counter{0};
+        this->add(mixHash(0xdeadbeef, counter.fetch_add(1)), bounds, paint);
+    }
+
+    void add(uint64_t h, const SkRect* local, const SkPaint* paint, RenderNode* node = nullptr) {
+        SkM44 ctm = this->getLocalToDevice();
+        float m[16];
+        ctm.getColMajor(m);
+        h = hashBytes(mixHash(h, this->state), m, sizeof(m));
+        ContentOp op { h, SkRect::MakeEmpty(), false, node };
+        if (local && !this->spreading && (!paint || paint->canComputeFastBounds())) {
+            SkRect storage;
+            const SkRect& bounds = paint ? paint->computeFastBounds(*local, &storage) : *local;
+            SkMatrix matrix = ctm.asM33();
+            if (!matrix.hasPerspective() && bounds.isFinite()) {
+                op.bounds = matrix.mapRect(bounds);
+                op.bounded = op.bounds.isFinite();
+            }
+        }
+        this->ops->push_back(op);
+    }
+
+    std::vector<ContentOp>* ops;
+    uint64_t state = 0;
+    bool spreading = false;
+    std::vector<std::pair<uint64_t, bool>> saved;
+};
+
+void RenderNode::diffContent(SkDrawable* recording) {
+    std::vector<ContentOp> ops;
+    {
+        ContentDigestCanvas digest(&ops);
+        recording->draw(&digest);
+    }
+    if (!this->contentOpsKnown) {
+        this->contentDamageUnknown = true;
+    } else if (!this->contentDamageUnknown) {
+        const std::vector<ContentOp>& before = this->contentOps;
+        size_t common = std::min(before.size(), ops.size());
+        size_t prefix = 0;
+        while (prefix < common && before[prefix].hash == ops[prefix].hash) prefix++;
+        size_t suffix = 0;
+        while (suffix < common - prefix && before[before.size() - 1 - suffix].hash == ops[ops.size() - 1 - suffix].hash) suffix++;
+        auto account = [this](const ContentOp& op, bool drawnBefore) {
+            if (op.node) {
+                if (drawnBefore) {
+                    // Gone from here, or moved: where a walk last found it.
+                    const DamageRecord& record = op.node->damage;
+                    if (record.tracker != 0 && !record.bounds.isEmpty()) {
+                        this->removedNodeDamage.emplace_back(record.tracker, record.bounds);
+                    }
+                } else {
+                    op.node->damage.forced = true;
+                }
+            } else if (op.bounded) {
+                this->contentDamage.join(op.bounds);
+            } else {
+                this->contentDamageUnknown = true;
+            }
+        };
+        for (size_t i = prefix; i < before.size() - suffix; i++) account(before[i], true);
+        for (size_t i = prefix; i < ops.size() - suffix; i++) account(ops[i], false);
+        if (this->removedNodeDamage.size() > 32) {
+            this->contentDamageUnknown = true;
+        }
+    }
+    this->contentOps = std::move(ops);
+    this->contentOpsKnown = true;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Damage walk (RenderNodeDamageTracker).
+//
+// Walks the trees a frame draws as drawing would reach them, on a canvas that draws nothing:
+// each node's device transform and clip, and the device bounds of what its subtree draws (its
+// shadow, its layer's filter output, its own content's measured bounds, and its nodes'). A node
+// remembers what the last walk found (DamageRecord). A node whose own state, transform or clip
+// changed since damages its old and new bounds; a new node damages its bounds; a node whose subtree
+// nothing changed in (its subtree generation, relayed up through the observers, is the same) is
+// not walked again, its bounds and layers taken from the record. A removed node damages nothing of
+// its own: the node that drew it was recorded anew, which damages that node's whole old bounds.
+// ---------------------------------------------------------------------------------------------
+
+// A local rect's device bounds under ctm, rounded out, a pixel wider for anti-aliasing, within clip.
+static SkIRect damageDeviceBounds(const SkM44& ctm, const SkRect& local, const SkIRect& clip) {
+    if (local.isEmpty() || clip.isEmpty()) {
+        return SkIRect::MakeEmpty();
+    }
+    SkMatrix matrix = ctm.asM33();
+    if (matrix.hasPerspective() || !local.isFinite()) {
+        return clip;
+    }
+    SkRect mapped = matrix.mapRect(local);
+    if (!mapped.isFinite()) {
+        return clip;
+    }
+    mapped.outset(1.0f, 1.0f);
+    if (!mapped.intersect(SkRect::Make(clip))) {
+        return SkIRect::MakeEmpty();
+    }
+    SkIRect result = mapped.roundOut();
+    return result.intersect(clip) ? result : SkIRect::MakeEmpty();
+}
+
+class DamageWalkerCanvas;
+
+class DamageWalk {
+public:
+    struct Accumulator {
+        SkIRect bounds = SkIRect::MakeEmpty();
+        std::vector<SkIRect> layers;
+    };
+
+    DamageWalk(uint32_t tracker, uint32_t frame, int width, int height);
+    ~DamageWalk();
+
+    static DamageWalk* get() { return current; }
+    bool isWalking(SkCanvas* canvas) const;
+
+    // Walks a root node drawn under matrix; its subtree's bounds and layers end in result.
+    void walkRoot(RenderNode* node, const SkMatrix& matrix, Accumulator* result);
+
+    void damage(const SkIRect& rect) {
+        if (!rect.isEmpty()) {
+            this->region.op(rect, SkRegion::kUnion_Op);
+        }
+    }
+    void push() { this->stack.emplace_back(); }
+    Accumulator pop() {
+        Accumulator top = std::move(this->stack.back());
+        this->stack.pop_back();
+        return top;
+    }
+    // Adds a subtree's bounds and layers to the subtree being walked.
+    void add(const SkIRect& bounds, const std::vector<SkIRect>& layers) {
+        if (this->stack.empty()) {
+            return;
+        }
+        Accumulator& top = this->stack.back();
+        top.bounds.join(bounds);
+        top.layers.insert(top.layers.end(), layers.begin(), layers.end());
+    }
+    void addBounds(const SkIRect& bounds) {
+        if (!this->stack.empty()) {
+            this->stack.back().bounds.join(bounds);
+        }
+    }
+    void addLayer(const SkIRect& bounds) {
+        if (!this->stack.empty() && !bounds.isEmpty()) {
+            this->stack.back().layers.push_back(bounds);
+        }
+    }
+
+    const uint32_t tracker;
+    const uint32_t frame;
+    SkRegion region;
+    bool full = false;
+    int walked = 0;
+    int skipped = 0;
+
+private:
+    static thread_local DamageWalk* current;
+    std::unique_ptr<DamageWalkerCanvas> canvas;
+    std::vector<Accumulator> stack;
+};
+
+thread_local DamageWalk* DamageWalk::current = nullptr;
+
+class DamageWalkerCanvas : public SkNoDrawCanvas {
+public:
+    DamageWalkerCanvas(int width, int height, DamageWalk* walk) : SkNoDrawCanvas(width, height), walk(walk) {}
+
+protected:
+    SaveLayerStrategy getSaveLayerStrategy(const SaveLayerRec& rec) override {
+        if (rec.fBackdrop) {
+            // Reads what is under it, beyond what it draws: not trackable.
+            this->walk->full = true;
+        }
+        // A layer in recorded content: damage covers it whole or not at all. Sized to the clip
+        // where a filter decides its bounds.
+        SkIRect clip = this->getDeviceClipBounds();
+        bool filtered = rec.fPaint && rec.fPaint->getImageFilter();
+        SkIRect bounds = rec.fBounds && !filtered
+            ? damageDeviceBounds(this->getLocalToDevice(), *rec.fBounds, clip)
+            : clip;
+        this->walk->addLayer(bounds);
+        this->walk->addBounds(bounds);
+        return SkNoDrawCanvas::getSaveLayerStrategy(rec);
+    }
+    void onDrawDrawable(SkDrawable* drawable, const SkMatrix* matrix) override {
+        if (drawable->getFlattenableType() == kRenderNode_Type) {
+            drawable->draw(this, matrix);
+            return;
+        }
+        // A drawable whose changes nothing reports: damaged on every frame.
+        SkM44 ctm = this->getLocalToDevice();
+        if (matrix) {
+            ctm = ctm * SkM44(*matrix);
+        }
+        SkIRect bounds = damageDeviceBounds(ctm, drawable->getBounds(), this->getDeviceClipBounds());
+        this->walk->damage(bounds);
+        this->walk->addBounds(bounds);
+    }
+
+private:
+    DamageWalk* walk;
+};
+
+DamageWalk::DamageWalk(uint32_t tracker, uint32_t frame, int width, int height)
+    : tracker(tracker), frame(frame),
+      canvas(std::make_unique<DamageWalkerCanvas>(std::max(width, 1), std::max(height, 1), this)) {
+    current = this;
+}
+
+DamageWalk::~DamageWalk() {
+    if (current == this) {
+        current = nullptr;
+    }
+}
+
+bool DamageWalk::isWalking(SkCanvas* canvas) const {
+    return canvas == this->canvas.get();
+}
+
+void DamageWalk::walkRoot(RenderNode* node, const SkMatrix& matrix, Accumulator* result) {
+    this->push();
+    int saveCount = this->canvas->save();
+    this->canvas->setMatrix(matrix);
+    node->draw(this->canvas.get());
+    this->canvas->restoreToCount(saveCount);
+    *result = this->pop();
+}
+
 RenderNode::RenderNode(const sk_sp<RenderNodeContext>& context)
     : context(context),
+      ownGeneration(0),
+      propertyGeneration(0),
+      ownContentBounds(SkRect::MakeEmpty()),
+      ownContentBoundsKnown(false),
+      recordingDepth(-1),
+      ownBoundsHierarchy(),
+      damage(),
+      contentOps(),
+      contentOpsKnown(false),
+      contentDamage(SkRect::MakeEmpty()),
+      contentDamageUnknown(true),
+      removedNodeDamage(),
       bbhFactory(context->shouldMeasureDrawBounds() ? new SkRTreeFactory() : nullptr),
       recorder(),
       contentCache(),
@@ -805,10 +1341,13 @@ void RenderNode::setLayerPaint(const std::optional<SkPaint>& layerPaint) {
     if (this->layerBatchable != wasBatchable || layerPaint.has_value() != hadLayer) {
         this->markLayerInfoDirty();
     }
-    this->invalidateSnapshot(kAppearance);
+    this->changed(kAppearance);
 }
 
 void RenderNode::setBounds(const SkRect& bounds) {
+    if (bounds == this->bounds) {
+        return;
+    }
     bool sizeChanged = this->bounds.width() != bounds.width() || this->bounds.height() != bounds.height();
 
     this->bounds = bounds;
@@ -818,45 +1357,67 @@ void RenderNode::setBounds(const SkRect& bounds) {
         this->matrixDirty = true;
     }
     // The bounds size is the cull rect of a clipping node's recording.
-    this->invalidateSnapshot(sizeChanged ? kContent : kAppearance);
+    this->changed(sizeChanged ? kContent : kAppearance);
 }
 
 void RenderNode::setPivot(const SkPoint& pivot) {
+    // NaN (no pivot) never equals itself: compare the bits.
+    if (memcmp(&pivot, &this->pivot, sizeof(SkPoint)) == 0) {
+        return;
+    }
     this->pivot = pivot;
     this->matrixDirty = true;
-    this->invalidateSnapshot(kAppearance);
+    this->changed(kAppearance);
 }
 
 void RenderNode::setAlpha(float alpha) {
+    if (alpha == this->alpha) {
+        return;
+    }
     this->alpha = alpha;
-    this->invalidateSnapshot(kAppearance);
+    this->changed(kAppearance);
 }
 
 void RenderNode::setScaleX(float scaleX) {
+    if (scaleX == this->scaleX) {
+        return;
+    }
     this->scaleX = scaleX;
     this->matrixDirty = true;
-    this->invalidateSnapshot(kAppearance);
+    this->changed(kAppearance);
 }
 
 void RenderNode::setScaleY(float scaleY) {
+    if (scaleY == this->scaleY) {
+        return;
+    }
     this->scaleY = scaleY;
     this->matrixDirty = true;
-    this->invalidateSnapshot(kAppearance);
+    this->changed(kAppearance);
 }
 
 void RenderNode::setTranslationX(float translationX) {
+    if (translationX == this->translationX) {
+        return;
+    }
     this->translationX = translationX;
     this->matrixDirty = true;
-    this->invalidateSnapshot(kAppearance);
+    this->changed(kAppearance);
 }
 
 void RenderNode::setTranslationY(float translationY) {
+    if (translationY == this->translationY) {
+        return;
+    }
     this->translationY = translationY;
     this->matrixDirty = true;
-    this->invalidateSnapshot(kAppearance);
+    this->changed(kAppearance);
 }
 
 void RenderNode::setShadowElevation(float shadowElevation) {
+    if (shadowElevation == this->shadowElevation) {
+        return;
+    }
     bool wasPreventingObserverSnapshot = this->preventsObserverSnapshot();
     this->shadowElevation = shadowElevation;
     // A shadow makes this node's drawing transform-dependent, which its observers read
@@ -866,35 +1427,50 @@ void RenderNode::setShadowElevation(float shadowElevation) {
         this->observersNotified = false;
     }
     // A shadow also lets the node draw outside its bounds, widening the cull rect.
-    this->invalidateSnapshot(kContent);
+    this->changed(kContent);
 }
 
 void RenderNode::setAmbientShadowColor(SkColor ambientShadowColor) {
+    if (ambientShadowColor == this->ambientShadowColor) {
+        return;
+    }
     this->ambientShadowColor = ambientShadowColor;
-    this->invalidateSnapshot(kAppearance);
+    this->changed(kAppearance);
 }
 
 void RenderNode::setSpotShadowColor(SkColor spotShadowColor) {
+    if (spotShadowColor == this->spotShadowColor) {
+        return;
+    }
     this->spotShadowColor = spotShadowColor;
-    this->invalidateSnapshot(kAppearance);
+    this->changed(kAppearance);
 }
 
 void RenderNode::setRotationX(float rotationX) {
+    if (rotationX == this->rotationX) {
+        return;
+    }
     this->rotationX = rotationX;
     this->matrixDirty = true;
-    this->invalidateSnapshot(kAppearance);
+    this->changed(kAppearance);
 }
 
 void RenderNode::setRotationY(float rotationY) {
+    if (rotationY == this->rotationY) {
+        return;
+    }
     this->rotationY = rotationY;
     this->matrixDirty = true;
-    this->invalidateSnapshot(kAppearance);
+    this->changed(kAppearance);
 }
 
 void RenderNode::setRotationZ(float rotationZ) {
+    if (rotationZ == this->rotationZ) {
+        return;
+    }
     this->rotationZ = rotationZ;
     this->matrixDirty = true;
-    this->invalidateSnapshot(kAppearance);
+    this->changed(kAppearance);
 }
 
 float RenderNode::getCameraDistance() const {
@@ -902,9 +1478,12 @@ float RenderNode::getCameraDistance() const {
 }
 
 void RenderNode::setCameraDistance(float cameraDistance) {
+    if (cameraDistance == this->getCameraDistance()) {
+        return;
+    }
     this->setCameraLocation(0.0f, 0.0f, cameraDistance);
     this->matrixDirty = true;
-    this->invalidateSnapshot(kAppearance);
+    this->changed(kAppearance);
 }
 
 void RenderNode::setClipRect(const std::optional<SkRect>& clipRect, SkClipOp op, bool doAntiAlias) {
@@ -913,7 +1492,7 @@ void RenderNode::setClipRect(const std::optional<SkRect>& clipRect, SkClipOp op,
     this->clipPath.reset();
     this->clipOp = op;
     this->clipAntiAlias = doAntiAlias;
-    this->invalidateSnapshot(kAppearance);
+    this->changed(kAppearance);
 }
 
 void RenderNode::setClipRRect(const std::optional<SkRRect>& clipRRect, SkClipOp op, bool doAntiAlias) {
@@ -922,7 +1501,7 @@ void RenderNode::setClipRRect(const std::optional<SkRRect>& clipRRect, SkClipOp 
     this->clipPath.reset();
     this->clipOp = op;
     this->clipAntiAlias = doAntiAlias;
-    this->invalidateSnapshot(kAppearance);
+    this->changed(kAppearance);
 }
 
 void RenderNode::setClipPath(const std::optional<SkPath>& clipPath, SkClipOp op, bool doAntiAlias) {
@@ -931,13 +1510,22 @@ void RenderNode::setClipPath(const std::optional<SkPath>& clipPath, SkClipOp op,
     this->clipPath = clipPath;
     this->clipOp = op;
     this->clipAntiAlias = doAntiAlias;
-    this->invalidateSnapshot(kAppearance);
+    this->changed(kAppearance);
 }
 
 void RenderNode::setClip(bool clip) {
+    if (clip == this->clip) {
+        return;
+    }
     this->clip = clip;
     // Clipping bounds the recording's cull rect to the node's own bounds.
-    this->invalidateSnapshot(kContent);
+    this->changed(kContent);
+}
+
+void RenderNode::changed(uint32_t changes) {
+    this->ownGeneration++;
+    this->propertyGeneration++;
+    this->invalidateSnapshot(changes);
 }
 
 const SkMatrix& RenderNode::getMatrix() {
@@ -961,12 +1549,40 @@ SkCanvas *RenderNode::beginRecordingInto(SkPictureRecorder& target) {
 }
 
 SkCanvas *RenderNode::beginRecording() {
-    return this->beginRecordingInto(this->recorder);
+    bool measureDrawBounds = this->mayDrawOutOfBounds();
+    this->ownBoundsHierarchy.reset();
+    if (this->context->shouldTrackDamage() && !(measureDrawBounds && this->bbhFactory)) {
+        this->ownBoundsHierarchy = sk_make_sp<OwnBoundsHierarchy>();
+    }
+    this->recordingDepth = static_cast<int>(recordingMeasuresOwnBounds.size());
+    recordingMeasuresOwnBounds.push_back(this->ownBoundsHierarchy != nullptr);
+    if (!this->ownBoundsHierarchy) {
+        return this->beginRecordingInto(this->recorder);
+    }
+    const SkRect& bounds = measureDrawBounds ? UNKNOWN_BOUNDS : SkRect::MakeWH(this->bounds.width(), this->bounds.height());
+    return this->recorder.beginRecording(bounds, this->ownBoundsHierarchy);
 }
 
 void RenderNode::endRecording() {
-    this->contentCache = this->recorder.finishRecordingAsDrawable();
+    sk_sp<SkDrawable> recording = this->recorder.finishRecordingAsDrawable();
+    if (this->recordingDepth >= 0 && static_cast<int>(recordingMeasuresOwnBounds.size()) > this->recordingDepth) {
+        recordingMeasuresOwnBounds.resize(this->recordingDepth);
+    }
+    this->recordingDepth = -1;
+    this->ownContentBoundsKnown = this->ownBoundsHierarchy != nullptr;
+    this->ownContentBounds = this->ownContentBoundsKnown ? this->ownBoundsHierarchy->bounds : SkRect::MakeEmpty();
+    this->ownBoundsHierarchy.reset();
+    // Before the old content goes: the nodes it drew are still alive.
+    if (this->ownContentBoundsKnown) {
+        this->diffContent(recording.get());
+    } else {
+        this->contentOps.clear();
+        this->contentOpsKnown = false;
+        this->contentDamageUnknown = true;
+    }
+    this->contentCache = std::move(recording);
     this->updateDependencies();
+    this->ownGeneration++;
     this->invalidateSnapshot(kContent | kDependencies);
 }
 
@@ -979,6 +1595,11 @@ SkFlattenable::Type RenderNode::getFlattenableType() const {
 }
 
 SkRect RenderNode::onGetBounds() {
+    if (!recordingMeasuresOwnBounds.empty() && recordingMeasuresOwnBounds.back()) {
+        // Into a recording that measures its own drawing only: the damage walk takes this
+        // node's bounds from the node itself.
+        return SkRect::MakeEmpty();
+    }
     this->updateMatrix();
     SkRect result;
     if (this->contentCache) {
@@ -1015,6 +1636,11 @@ size_t RenderNode::onApproximateBytesUsed() {
 
 
 void RenderNode::onDraw(SkCanvas* canvas) {
+    DamageWalk* walk = DamageWalk::get();
+    if (walk && walk->isWalking(canvas)) {
+        this->walkDamage(canvas, walk);
+        return;
+    }
     this->updateMatrix();
     // Whatever draws it next draws its current state, so its next change is news again.
     this->subtreeChangeRelayed = false;
@@ -1046,6 +1672,9 @@ void RenderNode::drawNode(SkCanvas* canvas, LayerBatch* batch) {
     canvas->translate(this->bounds.left(), this->bounds.top());
     if (!this->matrixIdentity) {
         canvas->concat(this->transformMatrix);
+    }
+    if (this->rejectedByDamage(canvas)) {
+        return;
     }
 
     if (this->shadowElevation > 0) {
@@ -1126,6 +1755,9 @@ void RenderNode::collectLayers(SkCanvas* canvas, LayerBatch* batch) {
     canvas->translate(this->bounds.left(), this->bounds.top());
     if (!this->matrixIdentity) {
         canvas->concat(this->transformMatrix);
+    }
+    if (this->rejectedByDamage(canvas)) {
+        return;
     }
 
     if (this->clip) {
@@ -1213,7 +1845,15 @@ bool RenderNode::drawRetainedLayer(SkCanvas* canvas, const SkRect& rect) {
         if (!key.ctm.isFinite() || !key.ctm.invert(&inverse)) {
             return false;
         }
+        // The clip within the filter's output: what a damage clip around the whole output leaves
+        // the same as a full one.
         key.bounds = device->devClipBounds();
+        SkRect output = this->layerPaint->getImageFilter()->computeFastBounds(rect);
+        SkIRect outputBounds = key.ctm.asM33().mapRect(output).roundOut();
+        outputBounds.outset(1, 1);
+        if (!key.bounds.intersect(outputBounds)) {
+            return false;
+        }
     } else if (!layerContentBounds(key.ctm, rect, &key.bounds) || !key.bounds.intersect(device->devClipBounds())) {
         return false;
     }
@@ -1228,7 +1868,10 @@ bool RenderNode::drawRetainedLayer(SkCanvas* canvas, const SkRect& rect) {
         this->retainedLayer = std::make_unique<RetainedLayer>();
     }
     RetainedLayer* retained = this->retainedLayer.get();
-    if (!(retained->image && retained->key == key)) {
+    // A clip inside the one the texture was rendered for (a damage clip, a layer scrolled partly
+    // out) draws from it too.
+    bool covered = retained->image && retained->key.sameExceptBounds(key) && retained->key.bounds.contains(key.bounds);
+    if (!covered) {
         if (retained->image) {
             retained->churn = retained->hits < kRetainedLayerPayback
                 ? std::min(retained->churn + 1, kRetainedLayerMaxChurn)
@@ -1530,6 +2173,276 @@ void RenderNode::invalidateSnapshot(uint32_t changes) {
             renderNode->invalidateSnapshot(kContent | kDependencies);
         }
     }
+}
+
+bool RenderNode::rejectedByDamage(SkCanvas* canvas) const {
+    if (inlineDepth > 0 || inlineEverythingDepth > 0) {
+        return false;
+    }
+    if (canvas->isClipEmpty()) {
+        // Draws nothing (a frame without damage still draws, under an empty clip).
+        return true;
+    }
+    const DamageRecord& record = this->damage;
+    if (record.tracker == 0 || record.multiple ||
+        !this->context->shouldUseSnapshotCache() ||
+        record.ownGeneration != this->ownGeneration || record.subtreeGeneration != this->subtreeGeneration ||
+        record.lighting != (this->shadowElevation > 0 ? this->context->getLightingGeneration() : 0)) {
+        return false;
+    }
+    SkIRect clip = canvas->getDeviceClipBounds();
+    // The record's bounds are within the clip the walk found, so they only tell about a clip
+    // inside that one.
+    if (clip.isEmpty() || !record.clip.contains(clip) || record.forced || SkIRect::Intersects(record.bounds, clip)) {
+        return false;
+    }
+    return sameMatrix(record.ctm, canvas->getLocalToDevice());
+}
+
+void RenderNode::walkDamage(SkCanvas* canvas, DamageWalk* walk) {
+    this->updateMatrix();
+    // Whatever draws it next draws its current state (see onDraw); the walk reaches every node
+    // whose state changed, so that its next change is relayed upwards again.
+    this->subtreeChangeRelayed = false;
+    walk->walked++;
+
+    canvas->translate(this->bounds.left(), this->bounds.top());
+    if (!this->matrixIdentity) {
+        canvas->concat(this->transformMatrix);
+    }
+    SkM44 ctm = canvas->getLocalToDevice();
+    SkIRect clip = canvas->getDeviceClipBounds();
+    // The bounds are taken within the clip a pixel wider: the walk's clip bounds follow Skia's
+    // rounding of each clip, which a GPU's coverage can exceed by a pixel at a fractional edge.
+    SkIRect wideClip = clip.makeOutset(1, 1);
+    uint32_t lighting = this->shadowElevation > 0 ? this->context->getLightingGeneration() : 0;
+
+    DamageRecord& record = this->damage;
+    bool known = record.tracker == walk->tracker;
+    bool again = known && record.frame == walk->frame;
+    bool samePlace = known && !record.multiple && !record.forced && record.propertyGeneration == this->propertyGeneration &&
+                     record.lighting == lighting && record.clip == clip && sameMatrix(record.ctm, ctm);
+    bool sameState = samePlace && record.ownGeneration == this->ownGeneration;
+    // Recorded anew, but drawn the same way otherwise: only what the recordings changed.
+    bool contentOnly = samePlace && !sameState && !this->contentDamageUnknown;
+    bool sameSubtree = sameState && this->context->shouldUseSnapshotCache() &&
+                       record.subtreeGeneration == this->subtreeGeneration;
+    if (sameSubtree && !again) {
+        record.frame = walk->frame;
+        walk->skipped++;
+        walk->add(record.bounds, record.layers);
+        return;
+    }
+
+    walk->push();
+    if (this->shadowElevation > 0) {
+        SkPath shadowPath;
+        bool hasPath = true;
+        if (this->clipRect) {
+            shadowPath = SkPathBuilder().addRect(*this->clipRect).detach();
+        } else if (this->clipRRect) {
+            shadowPath = SkPathBuilder().addRRect(*this->clipRRect).detach();
+        } else if (this->clipPath) {
+            shadowPath = *this->clipPath;
+        } else {
+            hasPath = false;
+        }
+        if (hasPath) {
+            const LightGeometry& light = this->context->getLightGeometry();
+            SkRect shadow;
+            uint32_t flags = this->alpha < 1.0f ? SkShadowFlags::kTransparentOccluder_ShadowFlag : SkShadowFlags::kNone_ShadowFlag;
+            bool measured = SkShadowUtils::GetLocalBounds(ctm.asM33(), shadowPath, SkPoint3{0.0f, 0.0f, this->shadowElevation},
+                                                          light.center, light.radius, flags, &shadow);
+            walk->addBounds(measured ? damageDeviceBounds(ctm, shadow, wideClip) : wideClip);
+        }
+    }
+    if (this->clip) {
+        if (this->clipRect) {
+            canvas->clipRect(*this->clipRect, this->clipOp, this->clipAntiAlias);
+        } else if (this->clipRRect) {
+            canvas->clipRRect(*this->clipRRect, this->clipOp, this->clipAntiAlias);
+        } else if (this->clipPath) {
+            canvas->clipPath(*this->clipPath, this->clipOp, this->clipAntiAlias);
+        } else {
+            canvas->clipRect(SkRect::MakeWH(this->bounds.width(), this->bounds.height()), this->clipOp, this->clipAntiAlias);
+        }
+    }
+    bool filtered = false;
+    if (this->layerPaint) {
+        SkRect rect = SkRect::MakeWH(this->bounds.width(), this->bounds.height());
+        SkIRect contentClip = canvas->getDeviceClipBounds().makeOutset(1, 1);
+        SkIRect layerBounds = damageDeviceBounds(ctm, rect, contentClip);
+        if (SkImageFilter* filter = this->layerPaint->getImageFilter()) {
+            filtered = true;
+            SkIRect output = damageDeviceBounds(ctm, filter->computeFastBounds(rect), contentClip);
+            walk->addBounds(output);
+            layerBounds.join(output);
+        }
+        walk->addLayer(layerBounds);
+        // As saveLayer bounds its content: rounded out (an anti-aliased clip rounds out).
+        canvas->clipRect(rect, /*doAntiAlias=*/true);
+    }
+    SkIRect contentClip = canvas->getDeviceClipBounds().makeOutset(1, 1);
+    if (this->contentCache) {
+        walk->addBounds(this->ownContentBoundsKnown ? damageDeviceBounds(ctm, this->ownContentBounds, contentClip) : contentClip);
+        this->contentCache->draw(canvas);
+    }
+    DamageWalk::Accumulator subtree = walk->pop();
+    if (!subtree.bounds.intersect(wideClip)) {
+        subtree.bounds.setEmpty();
+    }
+
+    if (again) {
+        // Drawn again in this frame: each occurrence is damaged, and the node counts as changed
+        // in the next frame too.
+        walk->damage(record.previousBounds);
+        walk->damage(record.bounds);
+        walk->damage(subtree.bounds);
+        record.bounds.join(subtree.bounds);
+        record.layers.insert(record.layers.end(), subtree.layers.begin(), subtree.layers.end());
+        record.multiple = true;
+    } else {
+        if (!known) {
+            walk->damage(subtree.bounds);
+        } else if (filtered && !sameSubtree) {
+            // A filter spreads any change inside it over its output.
+            walk->damage(record.bounds);
+            walk->damage(subtree.bounds);
+        } else if (contentOnly) {
+            walk->damage(damageDeviceBounds(ctm, this->contentDamage, contentClip));
+            for (const auto& removed : this->removedNodeDamage) {
+                if (removed.first == walk->tracker) {
+                    walk->damage(removed.second);
+                }
+            }
+        } else if (!sameState) {
+            walk->damage(record.bounds);
+            walk->damage(subtree.bounds);
+        }
+        record.previousBounds = known ? record.bounds : SkIRect::MakeEmpty();
+        record.bounds = subtree.bounds;
+        record.layers = subtree.layers;
+        record.multiple = false;
+    }
+    // What the recordings changed is accounted for.
+    this->contentDamage.setEmpty();
+    this->contentDamageUnknown = false;
+    this->removedNodeDamage.clear();
+    record.forced = false;
+    record.tracker = walk->tracker;
+    record.frame = walk->frame;
+    record.ownGeneration = this->ownGeneration;
+    record.propertyGeneration = this->propertyGeneration;
+    record.subtreeGeneration = this->subtreeGeneration;
+    record.lighting = lighting;
+    record.ctm = ctm;
+    record.clip = clip;
+    walk->add(subtree.bounds, subtree.layers);
+}
+
+// ---------------------------------------------------------------------------------------------
+// RenderNodeDamageTracker.
+// ---------------------------------------------------------------------------------------------
+
+static std::atomic<uint32_t> nextDamageTrackerId{1};
+
+// Damage made of more rects than this is merged into its bounds.
+static constexpr int kMaxDamageRects = 8;
+
+RenderNodeDamageTracker::RenderNodeDamageTracker() : id(nextDamageTrackerId.fetch_add(1)) {
+    // The nodes it walks may come from any context (a host tracks the nodes a framework records).
+    RenderNodeContext::onDamageTrackerMade();
+}
+
+RenderNodeDamageTracker::~RenderNodeDamageTracker() = default;
+
+static thread_local std::unique_ptr<DamageWalk> trackerWalk;
+
+void RenderNodeDamageTracker::beginFrame(int width, int height) {
+    if (width != this->width || height != this->height) {
+        this->fullNext = true;
+        this->width = width;
+        this->height = height;
+    }
+    this->frame++;
+    this->roots.clear();
+    this->rootBounds.clear();
+    this->layers.clear();
+    trackerWalk = std::make_unique<DamageWalk>(this->id, this->frame, width, height);
+}
+
+void RenderNodeDamageTracker::addNode(RenderNode* node, const SkMatrix& matrix) {
+    DamageWalk* walk = trackerWalk.get();
+    if (!walk || walk->tracker != this->id || !node) {
+        this->fullNext = true;
+        return;
+    }
+    DamageWalk::Accumulator result;
+    walk->walkRoot(node, matrix, &result);
+    this->roots.push_back(sk_ref_sp(node));
+    this->rootBounds.push_back(result.bounds);
+    this->layers.insert(this->layers.end(), result.layers.begin(), result.layers.end());
+}
+
+void RenderNodeDamageTracker::endFrame() {
+    std::unique_ptr<DamageWalk> walk = std::move(trackerWalk);
+    bool walked = walk && walk->tracker == this->id;
+    this->full = this->fullNext || !walked || walk->full;
+    this->fullNext = false;
+    this->walked = walked ? walk->walked : 0;
+    this->skipped = walked ? walk->skipped : 0;
+    this->region.setEmpty();
+    if (walked) {
+        this->region = walk->region;
+    }
+    // Roots added, removed or reordered: all of them, before and after.
+    if (this->roots != this->previousRoots) {
+        for (const SkIRect& bounds : this->previousRootBounds) {
+            this->region.op(bounds, SkRegion::kUnion_Op);
+        }
+        for (const SkIRect& bounds : this->rootBounds) {
+            this->region.op(bounds, SkRegion::kUnion_Op);
+        }
+    }
+    SkIRect target = SkIRect::MakeWH(std::max(this->width, 0), std::max(this->height, 0));
+    this->region.op(target, SkRegion::kIntersect_Op);
+    // Damage covers each layer whole or not at all.
+    for (int pass = 0; !this->full; pass++) {
+        if (this->region.computeRegionComplexity() > kMaxDamageRects) {
+            this->region.setRect(this->region.getBounds());
+        }
+        bool grew = false;
+        for (const SkIRect& layer : this->layers) {
+            if (this->region.intersects(layer) && !this->region.contains(layer)) {
+                this->region.op(layer, SkRegion::kUnion_Op);
+                grew = true;
+            }
+        }
+        if (!grew) {
+            break;
+        }
+        if (pass == 8) {
+            this->full = true;
+        }
+    }
+    this->region.op(target, SkRegion::kIntersect_Op);
+    if (this->region.computeRegionComplexity() > kMaxDamageRects) {
+        this->region.setRect(this->region.getBounds());
+    }
+    if (this->region.isRect() && this->region.getBounds() == target) {
+        this->full = true;
+    }
+    this->rects.clear();
+    if (this->full) {
+        this->region.setRect(target);
+    }
+    for (SkRegion::Iterator it(this->region); !it.done(); it.next()) {
+        this->rects.push_back(it.rect());
+    }
+    this->previousRoots = std::move(this->roots);
+    this->previousRootBounds = std::move(this->rootBounds);
+    this->roots.clear();
+    this->rootBounds.clear();
 }
 
 void RenderNode::drawShadow(SkCanvas *canvas, const LightGeometry& lightGeometry, const LightInfo& lightInfo) {

@@ -20,3 +20,8 @@ SKIKO_EXPORT void org_jetbrains_skiko_node_RenderNodeContextKt_RenderNodeContext
     };
     instance->setLightingInfo(lightGeometry, lightInfo);
 }
+
+SKIKO_EXPORT void org_jetbrains_skiko_node_RenderNodeContextKt_RenderNodeContext_1nSetDamageTracking
+  (KNativePointer ptr, KBoolean damageTracking) {
+    reinterpret_cast<skiko::node::RenderNodeContext *>(ptr)->setTrackDamage(damageTracking);
+}

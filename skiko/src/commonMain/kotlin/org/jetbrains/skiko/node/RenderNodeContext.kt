@@ -44,6 +44,22 @@ class RenderNodeContext internal constructor(ptr: NativePointer, managed: Boolea
         Stats.onNativeCall()
     }
 
+    /**
+     * Whether the nodes measure what their recordings draw, for a [RenderNodeDamageTracker] (which needs it, and the
+     * snapshot cache). It applies to the recordings made after it is set, so set it before the nodes record. Every
+     * context measures once the process made a tracker (a host tracks nodes that a framework's contexts record).
+     */
+    var damageTracking: Boolean = false
+        set(value) {
+            field = value
+            try {
+                Stats.onNativeCall()
+                RenderNodeContext_nSetDamageTracking(_ptr, value)
+            } finally {
+                reachabilityBarrier(this)
+            }
+        }
+
     fun setLightingInfo(
         centerX: Float = Float.MIN_VALUE,
         centerY: Float = Float.MIN_VALUE,
@@ -79,3 +95,8 @@ private external fun RenderNodeContext_nMake(measureDrawBounds: Boolean, snapsho
 // No ForceNativeThreadState: copies six numbers into stored values, so it is short and cannot block.
 // Native call path: RenderNodeContext::setLightingInfo
 private external fun RenderNodeContext_nSetLightingInfo(ptr: NativePointer, centerX: Float, centerY: Float, centerZ: Float, radius: Float, ambientShadowAlpha: Float, spotShadowAlpha: Float)
+
+@ExternalSymbolName("org_jetbrains_skiko_node_RenderNodeContextKt_RenderNodeContext_1nSetDamageTracking")
+// No ForceNativeThreadState: stores a flag, so it is short and cannot block.
+// Native call path: RenderNodeContext::setTrackDamage
+private external fun RenderNodeContext_nSetDamageTracking(ptr: NativePointer, damageTracking: Boolean)

@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <cstdint>
 #include <SkRefCnt.h>
 #include "Lighting.h"
@@ -18,6 +19,12 @@ public:
     // holds for the whole tree rather than for a single node.
     bool shouldUseSnapshotCache() const { return this->snapshotCache; }
 
+    // Whether the nodes measure what their recordings draw, for a RenderNodeDamageTracker: set, or
+    // on for every context once the process made a tracker. Applies to recordings made after.
+    bool shouldTrackDamage() const { return this->trackDamage || anyDamageTracker; }
+    void setTrackDamage(bool trackDamage) { this->trackDamage = trackDamage; }
+    static void onDamageTrackerMade() { anyDamageTracker = true; }
+
     const LightGeometry& getLightGeometry() const { return this->lightGeometry; }
     // Changes whenever the lighting does, which redraws the shadows of every node.
     uint32_t getLightingGeneration() const { return this->lightingGeneration; }
@@ -33,6 +40,8 @@ private:
     uint32_t lightingGeneration = 0;
     bool measureDrawBounds;
     bool snapshotCache;
+    bool trackDamage = false;
+    static std::atomic<bool> anyDamageTracker;
 };
 
 } // namespace node

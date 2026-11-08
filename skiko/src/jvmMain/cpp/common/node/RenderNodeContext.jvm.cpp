@@ -21,3 +21,8 @@ extern "C" JNIEXPORT void JNICALL Java_org_jetbrains_skiko_node_RenderNodeContex
     };
     instance->setLightingInfo(lightGeometry, lightInfo);
 }
+
+extern "C" JNIEXPORT void JNICALL Java_org_jetbrains_skiko_node_RenderNodeContextKt_RenderNodeContext_1nSetDamageTracking
+  (JNIEnv *env, jclass jclass, jlong ptr, jboolean damageTracking) {
+    reinterpret_cast<skiko::node::RenderNodeContext *>(ptr)->setTrackDamage(damageTracking);
+}

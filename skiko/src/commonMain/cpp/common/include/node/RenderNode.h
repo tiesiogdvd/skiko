@@ -2,6 +2,8 @@
 #include <memory>
 #include <optional>
 #include <unordered_set>
+#include <vector>
+#include <SkM44.h>
 #include <SkBBHFactory.h>
 #include <SkCamera.h>
 #include <SkCanvas.h>
@@ -23,6 +25,46 @@ namespace node {
 class RenderNodeContext;
 class LayerBatch;
 struct RetainedLayer;
+class DamageWalk;
+class RenderNode;
+class OwnBoundsHierarchy;
+
+// What a damage walk (RenderNodeDamageTracker) last found about a node: the state it was drawn
+// in, and the device area its drawing covered.
+struct DamageRecord {
+    // The tracker and frame of the walk that made the record; 0 for none.
+    uint32_t tracker = 0;
+    uint32_t frame = 0;
+    uint32_t ownGeneration = 0;
+    uint32_t propertyGeneration = 0;
+    uint32_t subtreeGeneration = 0;
+    uint32_t lighting = 0;
+    // Where the node was drawn: its device transform and the device clip bounds before its own clip.
+    SkM44 ctm;
+    SkIRect clip = SkIRect::MakeEmpty();
+    // The device bounds of everything the node draws, its subtree included.
+    SkIRect bounds = SkIRect::MakeEmpty();
+    // The bounds before the last walk that changed them (see multiple).
+    SkIRect previousBounds = SkIRect::MakeEmpty();
+    // Whether the node was drawn more than once in the walk's frame; then the bounds cover every
+    // occurrence, and the node counts as changed in the next frame.
+    bool multiple = false;
+    // The device bounds of the layers drawn in the subtree, which damage covers whole or not at all.
+    std::vector<SkIRect> layers;
+    // Set where the node was drawn anew by a recording that changed around it (added, moved
+    // between other drawing): the next walk damages it whole.
+    bool forced = false;
+};
+
+// One operation of a recording, as damage tracking compares two recordings of a node: a hash of
+// the operation and the state it draws in, and its bounds in the recording's space (unbounded
+// where unknown); for a drawn node, the node.
+struct ContentOp {
+    uint64_t hash;
+    SkRect bounds;
+    bool bounded;
+    RenderNode* node;
+};
 
 class RenderNode : public SkDrawable {
 public:
@@ -87,6 +129,9 @@ public:
     // other nodes through an alpha filter.
     bool shouldBeReferenced() const;
 
+    // The damage walk's visit of this node (see RenderNodeDamageTracker).
+    void walkDamage(SkCanvas *canvas, DamageWalk *walk);
+
 protected:
     // SkDrawable
     SkRect onGetBounds() override;
@@ -133,6 +178,9 @@ private:
     // Whether the retained layer will likely be drawn where canvas is (the collect pass's guess).
     bool retainedLayerMatches(SkCanvas *canvas) const;
     void releaseRetainedLayer();
+    // Compares the recording about to replace the content with it, adding what changed to the
+    // damage the next walk finds (see contentDamage).
+    void diffContent(SkDrawable* recording);
     // Tells the observers that what they draw of this node changed (see subtreeGeneration).
     void relaySubtreeChange();
     // The layer atlas's first pass: finds the layers this node's subtree will draw and where.
@@ -141,8 +189,35 @@ private:
     bool hasBatchableLayerInSubtree();
     void markLayerInfoDirty();
     void setCameraLocation(float x, float y, float z);
+    // A change to this node's own state: counted for damage tracking, then invalidates the snapshots.
+    void changed(uint32_t changes);
+    // Whether a damage walk found that this node, drawn where canvas now is, draws nothing inside
+    // canvas's clip, so that drawing it can be skipped.
+    bool rejectedByDamage(SkCanvas *canvas) const;
 
     sk_sp<RenderNodeContext> context;
+
+    // Changes whenever this node's own state does (properties, layer paint, recorded content), and
+    // whenever its properties or layer paint do.
+    uint32_t ownGeneration;
+    uint32_t propertyGeneration;
+    // The device-independent bounds of what the recorded content draws itself, the nodes it draws
+    // excluded (they report their own); unknown where the recording did not measure them.
+    SkRect ownContentBounds;
+    bool ownContentBoundsKnown;
+    // The recording-depth marker of the content recording in progress (see beginRecording).
+    int recordingDepth;
+    sk_sp<OwnBoundsHierarchy> ownBoundsHierarchy;
+    DamageRecord damage;
+    // The operations of the recorded content, and what the recordings since the last damage walk
+    // changed: the union of the changed operations' bounds (in the node's own space; unknown where
+    // one is unbounded or there was nothing to compare with), and the device bounds a walk found
+    // for the nodes no longer drawn where they were (per tracker).
+    std::vector<ContentOp> contentOps;
+    bool contentOpsKnown;
+    SkRect contentDamage;
+    bool contentDamageUnknown;
+    std::vector<std::pair<uint32_t, SkIRect>> removedNodeDamage;
 
     SkBBHFactory *bbhFactory;
     SkPictureRecorder recorder;

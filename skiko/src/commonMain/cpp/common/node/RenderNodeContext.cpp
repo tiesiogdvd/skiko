@@ -3,6 +3,8 @@
 namespace skiko {
 namespace node {
 
+std::atomic<bool> RenderNodeContext::anyDamageTracker{false};
+
 RenderNodeContext::RenderNodeContext(bool measureDrawBounds, bool snapshotCache)
     : measureDrawBounds(measureDrawBounds), snapshotCache(snapshotCache) {
 }
