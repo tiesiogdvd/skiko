@@ -6,6 +6,13 @@ import org.jetbrains.skia.impl.Library.Companion.staticLoad
 class Image internal constructor(ptr: NativePointer) : RefCnt(ptr), IHasImageInfo {
     companion object {
         /**
+         * An Image over a native `SkImage*` another Skiko module made (Graphite's texture wrap): it takes the
+         * reference the pointer carries.
+         */
+        @org.jetbrains.skiko.InternalSkikoApi
+        fun adoptNativePointer(ptr: NativePointer): Image = Image(ptr)
+
+        /**
          *
          * Creates Image from pixels.
          *

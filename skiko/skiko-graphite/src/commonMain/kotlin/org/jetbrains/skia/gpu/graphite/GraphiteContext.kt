@@ -27,14 +27,26 @@ class GraphiteContext internal constructor(ptr: NativePointer) : Managed(ptr, _F
          *
          * @param devicePtr native pointer to the Metal device.
          * @param queuePtr native pointer to the Metal command queue.
+         * @param options the context's options; the defaults are Skia's.
          * @return a Graphite context backed by Metal.
          */
-        fun makeMetal(devicePtr: NativePointer, queuePtr: NativePointer): GraphiteContext {
+        fun makeMetal(
+            devicePtr: NativePointer,
+            queuePtr: NativePointer,
+            options: GraphiteContextOptions = GraphiteContextOptions(),
+        ): GraphiteContext {
             requireMetalSupport()
             require(devicePtr != NullPointer) { "Metal device pointer is null" }
             require(queuePtr != NullPointer) { "Metal queue pointer is null" }
             Stats.onNativeCall()
-            val ptr = _nMakeMetal(devicePtr, queuePtr)
+            val ptr = _nMakeMetal(
+                devicePtr,
+                queuePtr,
+                options.internalMultisampleCount,
+                options.minimumPathSizeForMsaa,
+                options.glyphCacheTextureMaximumBytes,
+                options.setBackendLabels,
+            )
             check(ptr != NullPointer) { "Failed to create a Graphite Metal context" }
             return GraphiteContext(ptr)
         }
@@ -83,12 +95,15 @@ class GraphiteContext internal constructor(ptr: NativePointer) : Managed(ptr, _F
     /**
      * Creates a [Recorder] that records drawing commands for this context.
      *
+     * @param gpuBudgetInBytes the budget of the recorder's own GPU resources (the textures of its layers, its atlases,
+     * the images it uploads), over which it frees purgeable ones; null keeps Skia's default (256 MB).
      * @return a new recorder.
      */
-    fun makeRecorder(): Recorder {
+    fun makeRecorder(gpuBudgetInBytes: Long? = null): Recorder {
+        require(gpuBudgetInBytes == null || gpuBudgetInBytes >= 0L) { "GPU budget is negative" }
         return try {
             Stats.onNativeCall()
-            val ptr = _nMakeRecorder(nativePtr)
+            val ptr = _nMakeRecorder(nativePtr, gpuBudgetInBytes ?: -1L)
             check(ptr != NullPointer) { "Failed to create a Graphite recorder" }
             Recorder(ptr)
         } finally {
@@ -164,8 +179,79 @@ class GraphiteContext internal constructor(ptr: NativePointer) : Managed(ptr, _F
         }
     }
 
+    /**
+     * Frees the context's GPU resources that no work has used for [msNotUsed] milliseconds, or that are marked for
+     * deletion, and handles finished GPU work. A [Recorder] keeps its own resources: see
+     * [Recorder.performDeferredCleanup]. [maxPurgingMicros], when given, bounds how long the call spends purging.
+     */
+    fun performDeferredCleanup(msNotUsed: Long, maxPurgingMicros: Long? = null) {
+        require(msNotUsed >= 0L) { "msNotUsed is negative" }
+        require(maxPurgingMicros == null || maxPurgingMicros >= 0L) { "maxPurgingMicros is negative" }
+        try {
+            Stats.onNativeCall()
+            _nPerformDeferredCleanup(nativePtr, msNotUsed, maxPurgingMicros ?: -1L)
+        } finally {
+            reachabilityBarrier(this)
+        }
+    }
+
+    /** Frees every GPU resource the context holds that the GPU isn't still reading. */
+    fun freeGpuResources() {
+        try {
+            Stats.onNativeCall()
+            _nFreeGpuResources(nativePtr)
+        } finally {
+            reachabilityBarrier(this)
+        }
+    }
+
+    /** Bytes of the context's GPU budget in use (its own cache, not its recorders'). */
+    val currentBudgetedBytes: Long
+        get() = try {
+            Stats.onNativeCall()
+            _nGetBudgetBytes(nativePtr, BUDGET_CURRENT)
+        } finally {
+            reachabilityBarrier(this)
+        }
+
+    /** Bytes of the context's resources that could be freed now. */
+    val currentPurgeableBytes: Long
+        get() = try {
+            Stats.onNativeCall()
+            _nGetBudgetBytes(nativePtr, BUDGET_PURGEABLE)
+        } finally {
+            reachabilityBarrier(this)
+        }
+
     private object _FinalizerHolder {
         val PTR = _nGetGraphiteContextFinalizer()
+    }
+}
+
+/**
+ * Options of a [GraphiteContext]: a subset of Skia's `skgpu::graphite::ContextOptions`. The defaults are Skia's.
+ *
+ * @property internalMultisampleCount the most samples Graphite uses for its own MSAA draws (paths drawn by
+ * tessellation, for one); 1 turns those code paths off (paths go to the atlas).
+ * @property minimumPathSizeForMsaa paths smaller than this (device pixels) are drawn through the path atlas instead
+ * of MSAA; 0 draws every path that needs coverage with MSAA where it is on.
+ * @property glyphCacheTextureMaximumBytes the most bytes of the glyph cache's textures; 0 keeps Skia's default.
+ * @property setBackendLabels whether Graphite labels its backend objects (textures, buffers, pipelines), for GPU
+ * tools; off by default in a release build of Skia.
+ */
+@ExperimentalSkikoApi
+class GraphiteContextOptions(
+    val internalMultisampleCount: Int = 4,
+    val minimumPathSizeForMsaa: Float = 0f,
+    val glyphCacheTextureMaximumBytes: Long = 0L,
+    val setBackendLabels: Boolean = false,
+) {
+    init {
+        require(internalMultisampleCount in listOf(1, 2, 4, 8, 16)) {
+            "internalMultisampleCount must be 1, 2, 4, 8 or 16, not $internalMultisampleCount"
+        }
+        require(minimumPathSizeForMsaa >= 0f) { "minimumPathSizeForMsaa is negative" }
+        require(glyphCacheTextureMaximumBytes >= 0L) { "glyphCacheTextureMaximumBytes is negative" }
     }
 }
 
@@ -179,7 +265,14 @@ private external fun _nGetGraphiteContextFinalizer(): NativePointer
 // Needs ForceNativeThreadState: retains a Metal device and command queue, then builds the Metal context.
 // Native call path: ContextFactory::MakeMetal -> MtlSharedContext::Make
 @ForceNativeThreadState
-private external fun _nMakeMetal(devicePtr: NativePointer, queuePtr: NativePointer): NativePointer
+private external fun _nMakeMetal(
+    devicePtr: NativePointer,
+    queuePtr: NativePointer,
+    internalMultisampleCount: Int,
+    minimumPathSizeForMsaa: Float,
+    glyphCacheTextureMaximumBytes: Long,
+    setBackendLabels: Boolean,
+): NativePointer
 
 @ExternalSymbolName("org_jetbrains_skia_gpu_graphite_GraphiteContext__1nMakeVulkan")
 // No ForceNativeThreadState: returns 0 and ignores all six arguments, so it is short and cannot block.
@@ -196,7 +289,7 @@ private external fun _nMakeVulkan(
 // Needs ForceNativeThreadState: creates a recorder, and its resource provider creates Metal objects.
 // Native call path: Context::makeRecorder -> Recorder::Recorder
 @ForceNativeThreadState
-private external fun _nMakeRecorder(contextPtr: NativePointer): NativePointer
+private external fun _nMakeRecorder(contextPtr: NativePointer, gpuBudgetInBytes: Long): NativePointer
 
 @ExternalSymbolName("org_jetbrains_skia_gpu_graphite_GraphiteContext__1nInsertRecording")
 // Needs ForceNativeThreadState: queues GPU work, which is recorded as a Metal command buffer.
@@ -217,3 +310,19 @@ private external fun _nInsertRecording(
 // Native call path: Context::submit -> QueueManager::submitToGpu -> MtlCommandBuffer::commit
 @ForceNativeThreadState
 private external fun _nSubmit(contextPtr: NativePointer, syncCpu: Boolean)
+
+@ExternalSymbolName("org_jetbrains_skia_gpu_graphite_GraphiteContext__1nPerformDeferredCleanup")
+// Needs ForceNativeThreadState: checks finished GPU work and frees Metal resources through the resource cache.
+// Native call path: Context::performDeferredCleanup -> ResourceCache::purgeResourcesNotUsedSince
+@ForceNativeThreadState
+private external fun _nPerformDeferredCleanup(contextPtr: NativePointer, msNotUsed: Long, maxPurgingMicros: Long)
+
+@ExternalSymbolName("org_jetbrains_skia_gpu_graphite_GraphiteContext__1nFreeGpuResources")
+// Needs ForceNativeThreadState: checks finished GPU work and frees Metal resources through the resource cache.
+// Native call path: Context::freeGpuResources -> ResourceCache::purgeResources
+@ForceNativeThreadState
+private external fun _nFreeGpuResources(contextPtr: NativePointer)
+
+@ExternalSymbolName("org_jetbrains_skia_gpu_graphite_GraphiteContext__1nGetBudgetBytes")
+// No ForceNativeThreadState: reads a counter of the resource cache, so it is short and cannot block.
+private external fun _nGetBudgetBytes(contextPtr: NativePointer, which: Int): Long

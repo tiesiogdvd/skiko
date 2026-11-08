@@ -25,3 +25,20 @@ private fun makeTestMetalContext(): GraphiteContext {
     }
     return GraphiteContext.makeMetal(device.objcPtr(), queue.objcPtr())
 }
+
+/** Runs [block] with a Graphite context and a 16×16 BGRA Metal texture on the same device. */
+@OptIn(ExperimentalForeignApi::class, ExperimentalSkikoApi::class)
+internal fun withTestMetalTexture(block: (GraphiteContext, org.jetbrains.skia.impl.NativePointer) -> Unit) {
+    if (hostOs == OS.Tvos) return
+    val device = checkNotNull(MTLCreateSystemDefaultDevice()) { "Metal is not supported on this system" }
+    val queue = checkNotNull(device.newCommandQueue()) { "Failed to create a Metal command queue" }
+    val descriptor = platform.Metal.MTLTextureDescriptor.texture2DDescriptorWithPixelFormat(
+        platform.Metal.MTLPixelFormatBGRA8Unorm, 16u, 16u, false,
+    )
+    descriptor.usage = platform.Metal.MTLTextureUsageShaderRead or platform.Metal.MTLTextureUsageRenderTarget
+    descriptor.storageMode = platform.Metal.MTLStorageModePrivate
+    val texture = checkNotNull(device.newTextureWithDescriptor(descriptor)) { "Failed to create a Metal texture" }
+    GraphiteContext.makeMetal(device.objcPtr(), queue.objcPtr()).use { context ->
+        block(context, texture.objcPtr())
+    }
+}

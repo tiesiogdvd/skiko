@@ -27,3 +27,29 @@ Java_org_jetbrains_skia_gpu_graphite_SurfaceFactoryKt__1nWrapBackendTexture(
             std::move(colorSpace),
             surfaceProps.get()).release());
 }
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_org_jetbrains_skia_gpu_graphite_SurfaceFactoryKt__1nMakeRenderTarget(
+        JNIEnv* env,
+        jclass,
+        jlong recorderPtr,
+        jint width,
+        jint height,
+        jint colorType,
+        jint alphaType,
+        jlong colorSpacePtr,
+        jboolean mipmapped,
+        jintArray surfacePropsValues) {
+    auto recorder = reinterpret_cast<skgpu::graphite::Recorder*>(static_cast<uintptr_t>(recorderPtr));
+    SkImageInfo imageInfo = SkImageInfo::Make(
+            width, height,
+            static_cast<SkColorType>(colorType),
+            static_cast<SkAlphaType>(alphaType),
+            sk_ref_sp(reinterpret_cast<SkColorSpace*>(static_cast<uintptr_t>(colorSpacePtr))));
+    auto surfaceProps = skija::SurfaceProps::toSkSurfaceProps(env, surfacePropsValues);
+    return reinterpret_cast<jlong>(SkSurfaces::RenderTarget(
+            recorder,
+            imageInfo,
+            mipmapped ? skgpu::Mipmapped::kYes : skgpu::Mipmapped::kNo,
+            surfaceProps.get()).release());
+}

@@ -1,3 +1,5 @@
+#include <chrono>
+#include <optional>
 #include <vector>
 
 #include "common.h"
@@ -19,13 +21,24 @@ SKIKO_EXPORT KNativePointer org_jetbrains_skia_gpu_graphite_GraphiteContext__1nG
 }
 
 SKIKO_EXPORT KNativePointer org_jetbrains_skia_gpu_graphite_GraphiteContext__1nMakeMetal(
-        KNativePointer devicePtr, KNativePointer queuePtr) {
+        KNativePointer devicePtr,
+        KNativePointer queuePtr,
+        KInt internalMultisampleCount,
+        KFloat minimumPathSizeForMsaa,
+        KLong glyphCacheTextureMaximumBytes,
+        KBoolean setBackendLabels) {
     skgpu::graphite::MtlBackendContext backendContext{};
     backendContext.fDevice.retain(reinterpret_cast<CFTypeRef>(devicePtr));
     backendContext.fQueue.retain(reinterpret_cast<CFTypeRef>(queuePtr));
 
     skgpu::graphite::ContextOptions options{};
     options.fRequireOrderedRecordings = true;
+    options.fInternalMultisampleCount = skgpu::graphite::ToSampleCount(internalMultisampleCount);
+    options.fMinimumPathSizeForMSAA = minimumPathSizeForMsaa;
+    if (glyphCacheTextureMaximumBytes > 0) {
+        options.fGlyphCacheTextureMaximumBytes = static_cast<size_t>(glyphCacheTextureMaximumBytes);
+    }
+    options.fSetBackendLabels = setBackendLabels;
     return reinterpret_cast<KNativePointer>(
             skgpu::graphite::ContextFactory::MakeMetal(backendContext, options).release());
 }
@@ -41,10 +54,13 @@ SKIKO_EXPORT KNativePointer org_jetbrains_skia_gpu_graphite_GraphiteContext__1nM
 }
 
 SKIKO_EXPORT KNativePointer org_jetbrains_skia_gpu_graphite_GraphiteContext__1nMakeRecorder(
-        KNativePointer contextPtr) {
+        KNativePointer contextPtr, KLong gpuBudgetInBytes) {
     auto context = reinterpret_cast<skgpu::graphite::Context*>(contextPtr);
     skgpu::graphite::RecorderOptions options{};
     options.fImageProvider = SkikoGraphiteImageProvider::Make();
+    if (gpuBudgetInBytes >= 0) {
+        options.fGpuBudgetInBytes = static_cast<size_t>(gpuBudgetInBytes);
+    }
     return reinterpret_cast<KNativePointer>(context->makeRecorder(options).release());
 }
 
@@ -93,4 +109,26 @@ SKIKO_EXPORT void org_jetbrains_skia_gpu_graphite_GraphiteContext__1nSubmit(
     auto context = reinterpret_cast<skgpu::graphite::Context*>(contextPtr);
     context->submit(skgpu::graphite::SubmitInfo(
             syncCpu ? skgpu::graphite::SyncToCpu::kYes : skgpu::graphite::SyncToCpu::kNo));
+}
+
+SKIKO_EXPORT void org_jetbrains_skia_gpu_graphite_GraphiteContext__1nPerformDeferredCleanup(
+        KNativePointer contextPtr, KLong msNotUsed, KLong maxPurgingMicros) {
+    auto context = reinterpret_cast<skgpu::graphite::Context*>(contextPtr);
+    std::optional<std::chrono::microseconds> maxDuration;
+    if (maxPurgingMicros >= 0) maxDuration = std::chrono::microseconds(maxPurgingMicros);
+    context->performDeferredCleanup(std::chrono::milliseconds(msNotUsed), maxDuration);
+}
+
+SKIKO_EXPORT void org_jetbrains_skia_gpu_graphite_GraphiteContext__1nFreeGpuResources(KNativePointer contextPtr) {
+    reinterpret_cast<skgpu::graphite::Context*>(contextPtr)->freeGpuResources();
+}
+
+SKIKO_EXPORT KLong org_jetbrains_skia_gpu_graphite_GraphiteContext__1nGetBudgetBytes(
+        KNativePointer contextPtr, KInt which) {
+    auto context = reinterpret_cast<skgpu::graphite::Context*>(contextPtr);
+    switch (which) {
+        case 0: return static_cast<KLong>(context->currentBudgetedBytes());
+        case 1: return static_cast<KLong>(context->currentPurgeableBytes());
+        default: return static_cast<KLong>(context->maxBudgetedBytes());
+    }
 }

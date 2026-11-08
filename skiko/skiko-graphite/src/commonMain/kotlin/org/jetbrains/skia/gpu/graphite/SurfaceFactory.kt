@@ -3,6 +3,7 @@ package org.jetbrains.skia.gpu.graphite
 import org.jetbrains.skia.ColorSpace
 import org.jetbrains.skia.ExternalSymbolName
 import org.jetbrains.skia.ForceNativeThreadState
+import org.jetbrains.skia.ImageInfo
 import org.jetbrains.skia.Surface
 import org.jetbrains.skia.SurfaceProps
 import org.jetbrains.skia.impl.InteropPointer
@@ -47,6 +48,58 @@ fun Surface.Companion.wrapBackendTexture(
         reachabilityBarrier(colorSpace)
     }
 }
+
+/**
+ * Creates a Graphite surface with its own texture, drawn by [recorder]: an offscreen target whose snapshot
+ * ([Surface.makeImageSnapshot]) [recorder]'s other canvases can draw.
+ *
+ * @param imageInfo width, height, color type, alpha type and color space of the surface.
+ * @param mipmapped whether the texture has mip levels.
+ * @param surfaceProps optional surface properties controlling pixel geometry and rendering behavior.
+ * @return the surface, or `null` if it could not be created.
+ */
+@ExperimentalSkikoApi
+fun Surface.Companion.makeRenderTarget(
+    recorder: Recorder,
+    imageInfo: ImageInfo,
+    mipmapped: Boolean = false,
+    surfaceProps: SurfaceProps? = null,
+): Surface? {
+    return try {
+        Stats.onNativeCall()
+        val ptr = interopScope {
+            _nMakeRenderTarget(
+                recorder.nativePtr,
+                imageInfo.width,
+                imageInfo.height,
+                imageInfo.colorInfo.colorType.ordinal,
+                imageInfo.colorInfo.alphaType.ordinal,
+                getPtr(imageInfo.colorInfo.colorSpace),
+                mipmapped,
+                toInterop(surfaceProps?.packToIntArray()),
+            )
+        }
+        if (ptr == NullPointer) null else Surface(ptr)
+    } finally {
+        reachabilityBarrier(recorder)
+        reachabilityBarrier(imageInfo.colorInfo.colorSpace)
+    }
+}
+
+@ExternalSymbolName("org_jetbrains_skia_gpu_graphite_SurfaceFactory__1nMakeRenderTarget")
+// Needs ForceNativeThreadState: creates a Metal texture through the recorder's resource provider.
+// Native call path: SkSurfaces::RenderTarget -> Device::Make -> ResourceProvider::findOrCreateScratchTexture
+@ForceNativeThreadState
+private external fun _nMakeRenderTarget(
+    recorderPtr: NativePointer,
+    width: Int,
+    height: Int,
+    colorType: Int,
+    alphaType: Int,
+    colorSpacePtr: NativePointer,
+    mipmapped: Boolean,
+    surfaceProps: InteropPointer,
+): NativePointer
 
 @ExternalSymbolName("org_jetbrains_skia_gpu_graphite_SurfaceFactory__1nWrapBackendTexture")
 // Needs ForceNativeThreadState: wraps a Metal texture in a new surface and drops the old color space and surface

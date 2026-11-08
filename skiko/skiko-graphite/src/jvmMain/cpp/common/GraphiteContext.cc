@@ -1,4 +1,6 @@
+#include <chrono>
 #include <jni.h>
+#include <optional>
 #include <vector>
 
 #include "GraphiteImageProvider.hh"
@@ -27,7 +29,8 @@ Java_org_jetbrains_skia_gpu_graphite_GraphiteContextKt__1nGetGraphiteContextFina
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_org_jetbrains_skia_gpu_graphite_GraphiteContextKt__1nMakeMetal(
-        JNIEnv*, jclass, jlong devicePtr, jlong queuePtr) {
+        JNIEnv*, jclass, jlong devicePtr, jlong queuePtr, jint internalMultisampleCount,
+        jfloat minimumPathSizeForMsaa, jlong glyphCacheTextureMaximumBytes, jboolean setBackendLabels) {
 #if defined(SK_METAL)
     skgpu::graphite::MtlBackendContext backendContext{};
     backendContext.fDevice.retain(
@@ -37,6 +40,12 @@ Java_org_jetbrains_skia_gpu_graphite_GraphiteContextKt__1nMakeMetal(
 
     skgpu::graphite::ContextOptions options{};
     options.fRequireOrderedRecordings = true;
+    options.fInternalMultisampleCount = skgpu::graphite::ToSampleCount(internalMultisampleCount);
+    options.fMinimumPathSizeForMSAA = minimumPathSizeForMsaa;
+    if (glyphCacheTextureMaximumBytes > 0) {
+        options.fGlyphCacheTextureMaximumBytes = static_cast<size_t>(glyphCacheTextureMaximumBytes);
+    }
+    options.fSetBackendLabels = setBackendLabels;
     return reinterpret_cast<jlong>(
             skgpu::graphite::ContextFactory::MakeMetal(backendContext, options).release());
 #else
@@ -75,11 +84,14 @@ Java_org_jetbrains_skia_gpu_graphite_GraphiteContextKt__1nMakeVulkan(
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_org_jetbrains_skia_gpu_graphite_GraphiteContextKt__1nMakeRecorder(
-        JNIEnv*, jclass, jlong contextPtr) {
+        JNIEnv*, jclass, jlong contextPtr, jlong gpuBudgetInBytes) {
     auto context = reinterpret_cast<skgpu::graphite::Context*>(
             static_cast<uintptr_t>(contextPtr));
     skgpu::graphite::RecorderOptions options{};
     options.fImageProvider = SkikoGraphiteImageProvider::Make();
+    if (gpuBudgetInBytes >= 0) {
+        options.fGpuBudgetInBytes = static_cast<size_t>(gpuBudgetInBytes);
+    }
     return reinterpret_cast<jlong>(context->makeRecorder(options).release());
 }
 
@@ -139,4 +151,32 @@ Java_org_jetbrains_skia_gpu_graphite_GraphiteContextKt__1nSubmit(
             static_cast<uintptr_t>(contextPtr));
     context->submit(skgpu::graphite::SubmitInfo(
             syncCpu ? skgpu::graphite::SyncToCpu::kYes : skgpu::graphite::SyncToCpu::kNo));
+}
+
+static skgpu::graphite::Context* graphiteContextFrom(jlong ptr) {
+    return reinterpret_cast<skgpu::graphite::Context*>(static_cast<uintptr_t>(ptr));
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_org_jetbrains_skia_gpu_graphite_GraphiteContextKt__1nPerformDeferredCleanup(
+        JNIEnv*, jclass, jlong contextPtr, jlong msNotUsed, jlong maxPurgingMicros) {
+    std::optional<std::chrono::microseconds> maxDuration;
+    if (maxPurgingMicros >= 0) maxDuration = std::chrono::microseconds(maxPurgingMicros);
+    graphiteContextFrom(contextPtr)->performDeferredCleanup(std::chrono::milliseconds(msNotUsed), maxDuration);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_org_jetbrains_skia_gpu_graphite_GraphiteContextKt__1nFreeGpuResources(JNIEnv*, jclass, jlong contextPtr) {
+    graphiteContextFrom(contextPtr)->freeGpuResources();
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_org_jetbrains_skia_gpu_graphite_GraphiteContextKt__1nGetBudgetBytes(
+        JNIEnv*, jclass, jlong contextPtr, jint which) {
+    auto context = graphiteContextFrom(contextPtr);
+    switch (which) {
+        case 0: return static_cast<jlong>(context->currentBudgetedBytes());
+        case 1: return static_cast<jlong>(context->currentPurgeableBytes());
+        default: return static_cast<jlong>(context->maxBudgetedBytes());
+    }
 }
