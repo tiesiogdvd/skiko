@@ -2351,10 +2351,19 @@ static constexpr int kMaxDamageRects = 8;
 
 RenderNodeDamageTracker::RenderNodeDamageTracker() : id(nextDamageTrackerId.fetch_add(1)) {
     // The nodes it walks may come from any context (a host tracks the nodes a framework records).
-    RenderNodeContext::onDamageTrackerMade();
+    RenderNodeContext::onTrackerMeasuring(true);
 }
 
-RenderNodeDamageTracker::~RenderNodeDamageTracker() = default;
+RenderNodeDamageTracker::~RenderNodeDamageTracker() {
+    this->setMeasuring(false);
+}
+
+void RenderNodeDamageTracker::setMeasuring(bool measuring) {
+    if (measuring != this->measuring) {
+        this->measuring = measuring;
+        RenderNodeContext::onTrackerMeasuring(measuring);
+    }
+}
 
 static thread_local std::unique_ptr<DamageWalk> trackerWalk;
 

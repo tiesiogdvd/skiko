@@ -54,3 +54,8 @@ extern "C" JNIEXPORT jint JNICALL Java_org_jetbrains_skiko_node_RenderNodeDamage
     auto instance = reinterpret_cast<skiko::node::RenderNodeDamageTracker *>(ptr);
     return skipped ? instance->skippedNodes() : instance->walkedNodes();
 }
+
+extern "C" JNIEXPORT void JNICALL Java_org_jetbrains_skiko_node_RenderNodeDamageTrackerKt_RenderNodeDamageTracker_1nSetMeasuring
+  (JNIEnv *env, jclass jclass, jlong ptr, jboolean measuring) {
+    reinterpret_cast<skiko::node::RenderNodeDamageTracker *>(ptr)->setMeasuring(measuring);
+}

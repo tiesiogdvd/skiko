@@ -17,9 +17,9 @@ import org.jetbrains.skia.impl.Library.Companion.staticLoad
  * a size change or [invalidate], and where the nodes draw something whose changes can't be tracked (a backdrop
  * layer, which reads what is under it). A drawable other than a render node is damaged on every frame.
  *
- * Making a tracker turns [RenderNodeContext.damageTracking] on for every context (it measures what the nodes'
- * recordings draw; a recording made before measured nothing, and the area its node draws counts as unknown, the
- * clip's), so make it before the nodes record. The nodes need the snapshot cache on (it relays changes upwards).
+ * A tracker turns [RenderNodeContext.damageTracking] on for every context while it is [measuring] (the nodes'
+ * recordings measure what they draw; one made before measured nothing, and the area its node draws counts as
+ * unknown, the clip's), so make it before the nodes record. The nodes need the snapshot cache on (it relays changes upwards).
  * After a walk, drawing a node is skipped where the walk found it outside the canvas's clip, so a frame clipped to its
  * damage costs in proportion to it.
  *
@@ -70,6 +70,22 @@ class RenderNodeDamageTracker internal constructor(ptr: NativePointer, managed: 
             reachabilityBarrier(this)
         }
     }
+
+    /**
+     * Whether the nodes' recordings measure what they draw for this tracker (true from the start; every context's
+     * nodes measure while any tracker does). A host drawing whole frames for a while can turn it off to save the
+     * measuring; what is recorded meanwhile counts as drawing everything inside its clip until recorded again.
+     */
+    var measuring: Boolean = true
+        set(value) {
+            field = value
+            try {
+                Stats.onNativeCall()
+                RenderNodeDamageTracker_nSetMeasuring(_ptr, value)
+            } finally {
+                reachabilityBarrier(this)
+            }
+        }
 
     /**
      * Ends the frame: its damage, null when the whole target is damaged, else non-overlapping rects within the target
@@ -146,3 +162,8 @@ private external fun RenderNodeDamageTracker_nGetRects(ptr: NativePointer, resul
 // No ForceNativeThreadState: reads a counter, so it is short and cannot block.
 // Native call path: RenderNodeDamageTracker::walkedNodes, skippedNodes
 private external fun RenderNodeDamageTracker_nGetWalked(ptr: NativePointer, skipped: Boolean): Int
+
+@ExternalSymbolName("org_jetbrains_skiko_node_RenderNodeDamageTrackerKt_RenderNodeDamageTracker_1nSetMeasuring")
+// No ForceNativeThreadState: updates a counter, so it is short and cannot block.
+// Native call path: RenderNodeDamageTracker::setMeasuring
+private external fun RenderNodeDamageTracker_nSetMeasuring(ptr: NativePointer, measuring: Boolean)

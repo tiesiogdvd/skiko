@@ -36,6 +36,9 @@ public:
     void addNode(RenderNode *node, const SkMatrix &matrix);
     // Damages the whole target in the next frame (content drawn besides the nodes changed).
     void invalidate() { this->fullNext = true; }
+    // Whether recordings measure what they draw for it (on from the start). Off, a host drawing whole
+    // frames for a while saves the measuring; what is recorded meanwhile counts as drawing the clip.
+    void setMeasuring(bool measuring);
     void endFrame();
 
     bool isFull() const { return this->full; }
@@ -53,6 +56,7 @@ private:
     uint32_t frame = 0;
     int width = -1, height = -1;
     bool fullNext = true;
+    bool measuring = true;
     bool full = true;
     int walked = 0, skipped = 0;
     std::vector<sk_sp<RenderNode>> roots, previousRoots;

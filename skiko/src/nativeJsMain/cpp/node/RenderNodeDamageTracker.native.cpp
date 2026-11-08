@@ -49,3 +49,8 @@ SKIKO_EXPORT KInt org_jetbrains_skiko_node_RenderNodeDamageTrackerKt_RenderNodeD
     auto instance = reinterpret_cast<skiko::node::RenderNodeDamageTracker *>(ptr);
     return skipped ? instance->skippedNodes() : instance->walkedNodes();
 }
+
+SKIKO_EXPORT void org_jetbrains_skiko_node_RenderNodeDamageTrackerKt_RenderNodeDamageTracker_1nSetMeasuring
+  (KNativePointer ptr, KBoolean measuring) {
+    reinterpret_cast<skiko::node::RenderNodeDamageTracker *>(ptr)->setMeasuring(measuring);
+}
