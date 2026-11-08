@@ -1,0 +1,233 @@
+name: Flow release bundle
+
+# Flow's Skiko fork: a tag v<deploy.version> (for example v0.156.1-flow.1) builds every platform,
+# merges what each job publishes into one Maven layout and attaches it to a GitHub Release as
+# skiko-maven-<version>.zip with SHA256SUMS. A manual run builds the same bundle as a workflow
+# artifact without releasing.
+#
+# Each job publishes a disjoint set of publications into skiko/build/flow-repo (publishToFlowRepo's
+# directory; nothing goes to ~/.m2):
+#   macos        skiko (the KMP root module, which names every native target declared with
+#                skiko.native.enabled), skiko-awt, skiko-awt-runtime (the per-OS variant module),
+#                skiko-awt-runtime-macos-arm64/-x64, the macOS, iOS and tvOS klibs
+#   linux        skiko-awt-runtime-linux-x64, the linuxX64 and linuxArm64 klibs
+#   linux-arm64  skiko-awt-runtime-linux-arm64
+#   windows      skiko-awt-runtime-windows-x64/-arm64 (with the ANGLE runtimes they depend on)
+# The task names are unqualified, so the skiko-skottie and skiko-graphite modules publish their
+# matching publications in the same jobs (skiko-skottie*, skiko-graphite*), split the same way.
+# Not built: Android and web (the app does not take Skiko there), skiko-awt-runtime-all.
+
+on:
+  push:
+    tags:
+      - 'v*-flow.*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  GRADLE_ARGS: --no-daemon --stacktrace
+
+jobs:
+  version:
+    name: 'Version'
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release: ${{ steps.version.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        shell: bash
+        run: |
+          VERSION="$(sed -n 's/^deploy\.version=//p' skiko/gradle.properties)"
+          RELEASE="$(sed -n 's/^deploy\.release=//p' skiko/gradle.properties)"
+          if [[ -z "$VERSION" || "$RELEASE" != "true" ]]; then
+            echo "::error::skiko/gradle.properties needs deploy.version and deploy.release=true"
+            exit 1
+          fi
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            if [[ "$GITHUB_REF_NAME" != "v$VERSION" ]]; then
+              echo "::error::Tag $GITHUB_REF_NAME does not match deploy.version $VERSION (expected v$VERSION)"
+              exit 1
+            fi
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  macos:
+    name: 'macOS, iOS, tvOS'
+    needs: version
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'corretto'
+      - uses: ./.github/actions/setup-prerequisites
+      - name: 'Publish KMP root, AWT, macOS arm64 runtime and Apple klibs'
+        shell: bash
+        run: |
+          ./gradlew -p skiko $GRADLE_ARGS \
+            -Pskiko.native.enabled=true \
+            -Pskiko.awt.enabled=true \
+            -Pskiko.arch=arm64 \
+            publishKotlinMultiplatformPublicationToFlowRepoRepository \
+            publishAwtPublicationToFlowRepoRepository \
+            publishAwtRuntimeElementsPublicationToFlowRepoRepository \
+            publishSkikoJvmRuntimeMacosArm64PublicationToFlowRepoRepository \
+            publishMacosArm64PublicationToFlowRepoRepository \
+            publishMacosX64PublicationToFlowRepoRepository \
+            publishIosArm64PublicationToFlowRepoRepository \
+            publishIosSimulatorArm64PublicationToFlowRepoRepository \
+            publishIosX64PublicationToFlowRepoRepository \
+            publishTvosArm64PublicationToFlowRepoRepository \
+            publishTvosSimulatorArm64PublicationToFlowRepoRepository \
+            publishTvosX64PublicationToFlowRepoRepository
+      - name: 'Publish macOS x64 runtime'
+        shell: bash
+        run: |
+          ./gradlew -p skiko $GRADLE_ARGS \
+            -Pskiko.awt.enabled=true \
+            -Pskiko.arch=x64 \
+            publishSkikoJvmRuntimeMacosX64PublicationToFlowRepoRepository
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flow-repo-macos
+          path: skiko/build/flow-repo
+          if-no-files-found: error
+
+  linux:
+    name: 'Linux x64 runtime, Linux klibs'
+    needs: version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-prerequisites
+      - name: 'Build the Linux images'
+        shell: bash
+        run: |
+          docker build -t skiko-linux-compat skiko/docker/linux-compat
+          docker build -t skiko-linux-amd64 skiko/docker/linux-amd64
+      - name: 'Publish Linux x64 runtime'
+        shell: bash
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE":/workspace -v "$HOME/.gradle":/gradle-cache \
+            -e GRADLE_USER_HOME=/gradle-cache -e GRADLE_ARGS -w /workspace skiko-linux-compat \
+            bash -c './gradlew -p skiko $GRADLE_ARGS -Pskiko.awt.enabled=true -Pskiko.arch=x64 \
+              publishSkikoJvmRuntimeLinuxX64PublicationToFlowRepoRepository'
+      - name: 'Publish Linux klibs'
+        shell: bash
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE":/workspace -v "$HOME/.gradle":/gradle-cache \
+            -e GRADLE_USER_HOME=/gradle-cache -e GRADLE_ARGS -w /workspace skiko-linux-amd64 \
+            bash -c './gradlew -p skiko $GRADLE_ARGS -Pskiko.native.enabled=true -Pskiko.awt.enabled=false \
+              publishLinuxArm64PublicationToFlowRepoRepository publishLinuxX64PublicationToFlowRepoRepository'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flow-repo-linux
+          path: skiko/build/flow-repo
+          if-no-files-found: error
+
+  linux-arm64:
+    name: 'Linux arm64 runtime'
+    needs: version
+    # Built on an arm64 runner: cross-compiling the runtime on x64 fails
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-prerequisites
+      - name: 'Build the Linux image'
+        shell: bash
+        run: docker build -t skiko-linux-compat skiko/docker/linux-compat
+      - name: 'Publish Linux arm64 runtime'
+        shell: bash
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE":/workspace -v "$HOME/.gradle":/gradle-cache \
+            -e GRADLE_USER_HOME=/gradle-cache -e GRADLE_ARGS -w /workspace skiko-linux-compat \
+            bash -c './gradlew -p skiko $GRADLE_ARGS -Pskiko.awt.enabled=true -Pskiko.arch=arm64 \
+              publishSkikoJvmRuntimeLinuxArm64PublicationToFlowRepoRepository'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flow-repo-linux-arm64
+          path: skiko/build/flow-repo
+          if-no-files-found: error
+
+  windows:
+    name: 'Windows runtimes'
+    needs: version
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: microsoft/setup-msbuild@v1
+      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'corretto'
+      - uses: ./.github/actions/setup-prerequisites
+      - name: 'Publish Windows x64 runtime'
+        shell: bash
+        run: |
+          ./gradlew -p skiko $GRADLE_ARGS \
+            -Pskiko.awt.enabled=true \
+            -Pskiko.arch=x64 \
+            publishSkikoJvmRuntimeWindowsX64PublicationToFlowRepoRepository
+      - name: 'Publish Windows arm64 runtime'
+        shell: bash
+        run: |
+          ./gradlew -p skiko $GRADLE_ARGS \
+            -Pskiko.awt.enabled=true \
+            -Pskiko.arch=arm64 \
+            publishSkikoJvmRuntimeWindowsArm64PublicationToFlowRepoRepository
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flow-repo-windows
+          path: skiko/build/flow-repo
+          if-no-files-found: error
+
+  bundle:
+    name: 'Bundle and release'
+    needs: [version, macos, linux, linux-arm64, windows]
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: flow-repo-*
+          path: parts
+      - name: 'Merge the Maven layouts'
+        shell: bash
+        run: python3 .github/scripts/flow_merge_repos.py --version "$VERSION" --out merged parts/*
+      - name: 'Zip and checksum'
+        shell: bash
+        run: |
+          ZIP="skiko-maven-$VERSION.zip"
+          (cd merged && find . -type f | LC_ALL=C sort | sed 's|^\./||' | TZ=UTC zip -X -q "../$ZIP" -@)
+          sha256sum "$ZIP" > SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: skiko-maven-${{ env.VERSION }}
+          path: |
+            skiko-maven-${{ env.VERSION }}.zip
+            SHA256SUMS
+          if-no-files-found: error
+      - name: 'Create the GitHub Release'
+        if: needs.version.outputs.release == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "skiko-maven-$VERSION.zip" SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "Skiko $VERSION" \
+            --notes "Flow's Skiko $VERSION (group org.jetbrains.skiko), built on Skia $(sed -n 's/^dependencies\.skia=//p' skiko/gradle.properties) from $(sed -n 's/^dependencies\.skia\.repo=//p' skiko/gradle.properties). skiko-maven-$VERSION.zip is a Maven repository layout (org/jetbrains/skiko/...); SHA256SUMS holds its sha256."
