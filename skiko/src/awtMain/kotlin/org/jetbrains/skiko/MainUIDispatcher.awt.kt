@@ -13,7 +13,18 @@ import kotlin.coroutines.CoroutineContext
  * Currently, it uses Swing event dispatching thread.
  */
 val MainUIDispatcher: CoroutineDispatcher
-    get() = SwingDispatcher
+    get() = mainUIDispatcherOverride ?: SwingDispatcher
+
+private var mainUIDispatcherOverride: CoroutineDispatcher? = null
+
+/**
+ * Replaces the Swing event dispatching thread behind [MainUIDispatcher] with [dispatcher], for an
+ * application whose UI thread is not the EDT. Call it before the first [SkiaLayer] is created: the
+ * frame schedulers read [MainUIDispatcher] when they are built.
+ */
+fun setMainUIDispatcher(dispatcher: MainCoroutineDispatcher) {
+    mainUIDispatcherOverride = dispatcher
+}
 
 /**
  * Dispatcher for Swing event dispatching thread.
