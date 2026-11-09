@@ -18,13 +18,13 @@
 #include <SkRect.h>
 #include <SkRefCnt.h>
 #include "Lighting.h"
+#include "RenderNodeRasterCache.h"
 
 namespace skiko {
 namespace node {
 
 class RenderNodeContext;
 class LayerBatch;
-struct RetainedLayer;
 class DamageWalk;
 class RenderNode;
 class OwnBoundsHierarchy;
@@ -132,6 +132,12 @@ public:
     // The damage walk's visit of this node (see RenderNodeDamageTracker).
     void walkDamage(SkCanvas *canvas, DamageWalk *walk);
 
+    static bool isRenderNode(SkDrawable* drawable);
+    // A frame starts after this node composited a promoted texture inexactly: if nothing about it
+    // changed since, its animation ended, and it is marked changed to be drawn exactly (see
+    // RasterCache::beginFrame).
+    void settle();
+
 protected:
     // SkDrawable
     SkRect onGetBounds() override;
@@ -172,12 +178,23 @@ private:
     void drawShadow(SkCanvas *canvas, const LightGeometry& lightGeometry, const LightInfo& lightInfo);
     // The node's drawing onto a canvas, with [batch] being the frame's layer atlas, if any.
     void drawNode(SkCanvas *canvas, LayerBatch *batch);
-    // Draws this node's layer from the texture it keeps while its content and placement stay
-    // the same; false where the layer has to be drawn otherwise.
-    bool drawRetainedLayer(SkCanvas *canvas, const SkRect& rect);
-    // Whether the retained layer will likely be drawn where canvas is (the collect pass's guess).
-    bool retainedLayerMatches(SkCanvas *canvas) const;
-    void releaseRetainedLayer();
+    // The texture the node keeps between frames (RenderNodeRasterCache.cpp). drawFromCache draws
+    // its layer (or, without one, its clip and content) from it where the frame's decision says
+    // so, restCtm being where the node draws without its own transform; cacheWillDraw is the
+    // decision as the atlas's collect pass sees it, target the canvas the frame draws onto.
+    bool drawFromCache(SkCanvas *canvas, const SkM44& restCtm);
+    bool cacheWillDraw(SkCanvas *canvas, SkCanvas *target, const SkM44& restCtm);
+    NodeCache* cacheFor(SkCanvas *canvas, SkCanvas *target, const TextureOwner& owner);
+    NodeCache::Decision cacheDecision(SkCanvas *canvas, SkCanvas *target, const SkM44& restCtm, const TextureOwner& owner);
+    void releaseCache();
+    void analyseSubtree();
+    bool contentClipBounds(SkRect* local) const;
+    bool filteredLayerBounds(SkCanvas *canvas, const SkM44& ctm, SkIRect* result) const;
+    void applyClip(SkCanvas *canvas) const;
+    // Whether the raster cache may keep this node's content (it has to be drawn as a node, not
+    // inlined into a snapshot, for that): no layer, full alpha, a clip or measured bounds, and
+    // content worth it that composites the same through a texture.
+    bool mayCacheContent();
     // Compares the recording about to replace the content with it, adding what changed to the
     // damage the next walk finds (see contentDamage).
     void diffContent(SkDrawable* recording);
@@ -259,7 +276,7 @@ private:
     uint32_t subtreeGeneration;
     // Whether the observers were told of a subtree change since this node was last drawn.
     bool subtreeChangeRelayed;
-    std::unique_ptr<RetainedLayer> retainedLayer;
+    std::unique_ptr<NodeCache> cache;
     // Cached hasBatchableLayerInSubtree(), valid unless layerInfoDirty. A dirty node's
     // observers are dirty too (see markLayerInfoDirty).
     bool layerInfoDirty;

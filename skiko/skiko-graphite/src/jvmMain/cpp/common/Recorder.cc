@@ -4,7 +4,12 @@
 
 #include "include/gpu/graphite/Recorder.h"
 
+// Skiko's render nodes keep textures made with a recorder (RenderNodeRasterCache.h, in the core library).
+extern "C" void skiko_node_onGraphiteRecorderClosing(const void* recorder);
+extern "C" void skiko_node_purgeTextures(int64_t msNotUsed, const void* owner);
+
 static void deleteRecorder(skgpu::graphite::Recorder* recorder) {
+    skiko_node_onGraphiteRecorderClosing(recorder);
     delete recorder;
 }
 
@@ -30,11 +35,14 @@ Java_org_jetbrains_skia_gpu_graphite_RecorderKt__1nRecorderPerformDeferredCleanu
         JNIEnv*, jclass, jlong recorderPtr, jlong msNotUsed, jlong maxPurgingMicros) {
     std::optional<std::chrono::microseconds> maxDuration;
     if (maxPurgingMicros >= 0) maxDuration = std::chrono::microseconds(maxPurgingMicros);
+    // Render nodes' textures not drawn for as long go too.
+    skiko_node_purgeTextures(msNotUsed, recorderFrom(recorderPtr));
     recorderFrom(recorderPtr)->performDeferredCleanup(std::chrono::milliseconds(msNotUsed), maxDuration);
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_org_jetbrains_skia_gpu_graphite_RecorderKt__1nRecorderFreeGpuResources(JNIEnv*, jclass, jlong recorderPtr) {
+    skiko_node_purgeTextures(0, recorderFrom(recorderPtr));
     recorderFrom(recorderPtr)->freeGpuResources();
 }
 

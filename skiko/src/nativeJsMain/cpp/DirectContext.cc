@@ -1,5 +1,6 @@
 #include <chrono>
 #include "ganesh/GrDirectContext.h"
+#include "node/RenderNodeRasterCache.h"
 #include "ganesh/gl/GrGLInterface.h"
 #include "common.h"
 #include "ganesh/gl/GrGLDirectContext.h" // TODO: skia update: check if it's correct
@@ -128,6 +129,8 @@ SKIKO_EXPORT void org_jetbrains_skia_DirectContext__1nSetResourceCacheLimit
 SKIKO_EXPORT void org_jetbrains_skia_DirectContext__1nPerformDeferredCleanup
   (KNativePointer ptr, KLong msNotUsed, KBoolean scratchResourcesOnly) {
     GrDirectContext* context = reinterpret_cast<GrDirectContext*>(ptr);
+    // Render nodes' textures not drawn for as long go too (they aren't scratch resources).
+    if (!scratchResourcesOnly) skiko::node::RasterCache::purge(msNotUsed, static_cast<GrRecordingContext*>(context));
     context->performDeferredCleanup(std::chrono::milliseconds(msNotUsed),
         scratchResourcesOnly ? GrPurgeResourceOptions::kScratchResourcesOnly : GrPurgeResourceOptions::kAllResources);
 }
@@ -135,6 +138,7 @@ SKIKO_EXPORT void org_jetbrains_skia_DirectContext__1nPerformDeferredCleanup
 SKIKO_EXPORT void org_jetbrains_skia_DirectContext__1nFreeGpuResources
   (KNativePointer ptr) {
     GrDirectContext* context = reinterpret_cast<GrDirectContext*>(ptr);
+    skiko::node::RasterCache::purge(0, static_cast<GrRecordingContext*>(context));
     context->freeGpuResources();
 }
 
@@ -191,6 +195,7 @@ SKIKO_EXPORT void org_jetbrains_skia_DirectContext__1nReset
 SKIKO_EXPORT void org_jetbrains_skia_DirectContext__1nAbandon
   (KNativePointer ptr, KInt flags) {
     GrDirectContext* context = reinterpret_cast<GrDirectContext*>((ptr));
+    skiko::node::RasterCache::onGaneshContextReleasing(static_cast<GrRecordingContext*>(context));
     context->abandonContext();
 }
 

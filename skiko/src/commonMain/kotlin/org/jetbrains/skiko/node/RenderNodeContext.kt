@@ -30,12 +30,13 @@ class RenderNodeContext internal constructor(ptr: NativePointer, managed: Boolea
      * drawn live, so their changes leave the snapshots above them valid.
      *
      * On a GPU canvas the nodes also draw their layers without a render pass each: the layers a
-     * drawing reaches outside other layers are rendered together into one atlas texture first, and
-     * a layer whose content and placement stay the same from one frame to the next keeps its texture
-     * (an image filter layer, its filtered result) and is only composited again. Both reproduce
-     * saveLayer's pixels. `SKIKO_RENDER_NODE_LAYER_ATLAS=0` and `SKIKO_RENDER_NODE_LAYER_RETAIN=0` in
-     * the environment turn them off, `SKIKO_RENDER_NODE_LAYER_RETAIN_MB` bounds the retained
-     * textures (96 by default), and `SKIKO_RENDER_NODE_LAYER_ATLAS=log` reports what they do.
+     * drawing reaches outside other layers are rendered together into one atlas texture first
+     * (`SKIKO_RENDER_NODE_LAYER_ATLAS=0` turns it off, `=log` reports what it and the textures do).
+     * And nodes keep textures between frames (see [RenderNodeCaches]): a layer whose content and
+     * placement stay the same keeps its texture (an image filter layer, its filtered result) and is
+     * only composited again; a clipped subtree drawn unchanged for a few frames is drawn as one image;
+     * a layer or clipped subtree that moves while its content doesn't is composited from a texture
+     * for the motion's length.
      */
     constructor(
         measureDrawBounds: Boolean = false,

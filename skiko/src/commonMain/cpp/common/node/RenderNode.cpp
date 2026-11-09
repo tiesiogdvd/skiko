@@ -28,6 +28,7 @@
 #include "node/RenderNode.h"
 #include "node/RenderNodeContext.h"
 #include "node/RenderNodeDamage.h"
+#include "node/RenderNodeRasterCache.h"
 
 namespace skiko {
 namespace node {
@@ -276,7 +277,7 @@ static bool sameMatrix(const SkM44& a, const SkM44& b) {
 // Whether restoring a layer drawn with this paint only composites the layer's own pixels,
 // so that the layer can be bounded by its content (internalSaveLayer's trivialRestore) and
 // stand alone in an atlas.
-static bool isBatchableLayerPaint(const SkPaint& paint) {
+bool isBatchableLayerPaint(const SkPaint& paint) {
     if (paint.getImageFilter() || paint.getShader() || paint.getMaskFilter() || paint.getPathEffect()) {
         return false;
     }
@@ -371,6 +372,7 @@ public:
     }
 
     static LayerBatch* get() { return current; }
+    SkCanvas* targetCanvas() const { return this->target; }
 
     // Whether a drawing of a node onto canvas should start a batch: a GPU canvas whose top
     // device maps to the canvas's coordinates as is, as only then is a layer's device the
@@ -629,143 +631,9 @@ public:
 static thread_local std::vector<bool> recordingMeasuresOwnBounds;
 
 // ---------------------------------------------------------------------------------------------
-// Retained layers.
-//
-// A layer whose content and placement do not change between frames (a static page fading in,
-// a disabled control at a fixed alpha, a blurred panel over static content) is rendered once
-// into a texture the node keeps, and each later frame only composites that texture with the
-// layer paint, as Android keeps a promoted layer. The texture is the layer saveLayer would make
-// -- the same device bounds, the same device transform, so the same pixels -- and it is kept
-// only while the key below holds. A layer gets one after a few identical draws in a row, and a
-// layer whose key changes goes back to the atlas or saveLayer and frees its texture. An image filter layer (a blur) keeps the
-// filtered result, which saveLayer would composite into the canvas, keyed on the canvas's clip
-// too, since a filter's input depends on it.
-//
-// Ganesh only: a Graphite surface keeps a bare pointer to its Recorder, which may go away while
-// a node keeps the texture. Textures are bounded by a budget, and one made on a thread is
-// released there (a node released elsewhere hands it over).
+// Textures kept between frames (retained layers, the raster cache, promotions): see
+// RenderNodeRasterCache.h.
 // ---------------------------------------------------------------------------------------------
-
-static bool layerRetainingEnabled() {
-    static const bool enabled = [] {
-        const char* value = getenv("SKIKO_RENDER_NODE_LAYER_RETAIN");
-        return !(value && strcmp(value, "0") == 0);
-    }();
-    return enabled;
-}
-
-static size_t layerRetainingBudget() {
-    static const size_t budget = [] {
-        const char* value = getenv("SKIKO_RENDER_NODE_LAYER_RETAIN_MB");
-        long mb = value ? strtol(value, nullptr, 10) : 96;
-        return static_cast<size_t>(std::max(0L, mb)) << 20;
-    }();
-    return budget;
-}
-
-static std::atomic<size_t> retainedLayerBytes{0};
-
-// A layer gets a texture once it was drawn the same this many times in a row (doubled for each
-// time its texture went stale within kRetainedLayerPayback composites).
-static constexpr int kRetainedLayerStableDraws = 3;
-static constexpr int kRetainedLayerPayback = 4;
-static constexpr int kRetainedLayerMaxChurn = 5;
-
-struct RetainedLayerKey {
-    const void* context = nullptr;
-    SkM44 ctm;
-    SkIRect bounds = SkIRect::MakeEmpty();
-    uint32_t content = 0;
-    uint32_t paint = 0;
-    uint32_t lighting = 0;
-    SkColorType colorType = kUnknown_SkColorType;
-    const SkColorSpace* colorSpace = nullptr;
-
-    bool operator==(const RetainedLayerKey& other) const {
-        return this->bounds == other.bounds && this->sameExceptBounds(other);
-    }
-    bool sameExceptBounds(const RetainedLayerKey& other) const {
-        float a[16], b[16];
-        this->ctm.getColMajor(a);
-        other.ctm.getColMajor(b);
-        return this->context == other.context &&
-               this->content == other.content && this->paint == other.paint &&
-               this->lighting == other.lighting && this->colorType == other.colorType &&
-               this->colorSpace == other.colorSpace && memcmp(a, b, sizeof(a)) == 0;
-    }
-};
-
-struct RetainedLayer {
-    RetainedLayerKey lastKey;
-    bool hasLastKey = false;
-    // Draws in a row with lastKey, composites from the current texture, and how often a texture
-    // went stale before it paid for itself: a layer that keeps changing after short pauses has to
-    // hold still for longer (exponentially) before it gets a texture again.
-    int stableDraws = 0;
-    int hits = 0;
-    int churn = 0;
-    RetainedLayerKey key;
-    sk_sp<SkSurface> surface;
-    sk_sp<SkImage> image;
-    // Where the image's (0, 0) is on the device.
-    SkIPoint origin = { 0, 0 };
-    size_t bytes = 0;
-    std::thread::id thread;
-
-    void release();
-    ~RetainedLayer() { this->release(); }
-};
-
-// Textures of retained layers released away from the thread that made them, released there on
-// its next draw.
-static std::mutex graveyardMutex;
-static std::vector<std::pair<std::thread::id, sk_sp<SkSurface>>> graveyard;
-static std::atomic<bool> graveyardNonEmpty{false};
-
-static void drainGraveyard() {
-    if (!graveyardNonEmpty.load(std::memory_order_relaxed)) {
-        return;
-    }
-    std::vector<sk_sp<SkSurface>> mine;
-    {
-        std::lock_guard<std::mutex> lock(graveyardMutex);
-        auto here = std::this_thread::get_id();
-        for (auto it = graveyard.begin(); it != graveyard.end();) {
-            if (it->first == here) {
-                mine.push_back(std::move(it->second));
-                it = graveyard.erase(it);
-            } else {
-                ++it;
-            }
-        }
-        graveyardNonEmpty.store(!graveyard.empty(), std::memory_order_relaxed);
-    }
-}
-
-void RetainedLayer::release() {
-    this->image.reset();
-    if (this->surface) {
-        retainedLayerBytes.fetch_sub(this->bytes, std::memory_order_relaxed);
-        if (std::this_thread::get_id() != this->thread) {
-            std::lock_guard<std::mutex> lock(graveyardMutex);
-            graveyard.emplace_back(this->thread, std::move(this->surface));
-            graveyardNonEmpty.store(true, std::memory_order_relaxed);
-        }
-        this->surface.reset();
-    }
-    this->bytes = 0;
-}
-
-// The restore paint of a layer whose image (filtered or not) is composited from a texture.
-static SkPaint layerRestorePaint(const SkPaint& layerPaint) {
-    SkPaint paint(layerPaint);
-    paint.setStyle(SkPaint::kFill_Style);
-    paint.setPathEffect(nullptr);
-    paint.setMaskFilter(nullptr);
-    paint.setImageFilter(nullptr);
-    paint.setAntiAlias(true);
-    return paint;
-}
 
 // Whether two layer paints differ only in what a retained layer applies while compositing:
 // alpha, color filter and blend mode for a plain layer; for an image filter layer the filter
@@ -1288,7 +1156,7 @@ RenderNode::RenderNode(const sk_sp<RenderNodeContext>& context)
       layerPaintGeneration(0),
       subtreeGeneration(0),
       subtreeChangeRelayed(false),
-      retainedLayer(),
+      cache(),
       layerInfoDirty(true),
       subtreeHasBatchableLayer(false),
       bounds { 0.0f, 0.0f, 0.0f, 0.0f },
@@ -1336,7 +1204,7 @@ void RenderNode::setLayerPaint(const std::optional<SkPaint>& layerPaint) {
     this->layerPaint = layerPaint;
     this->layerBatchable = layerPaint && isBatchableLayerPaint(*layerPaint);
     if (!layerPaint) {
-        this->releaseRetainedLayer();
+        this->releaseCache();
     }
     if (this->layerBatchable != wasBatchable || layerPaint.has_value() != hadLayer) {
         this->markLayerInfoDirty();
@@ -1594,6 +1462,25 @@ SkFlattenable::Type RenderNode::getFlattenableType() const {
     return kRenderNode_Type;
 }
 
+bool RenderNode::isRenderNode(SkDrawable* drawable) {
+    return drawable->getFlattenableType() == kRenderNode_Type;
+}
+
+void RenderNode::applyClip(SkCanvas* canvas) const {
+    if (!this->clip) {
+        return;
+    }
+    if (this->clipRect) {
+        canvas->clipRect(*this->clipRect, this->clipOp, this->clipAntiAlias);
+    } else if (this->clipRRect) {
+        canvas->clipRRect(*this->clipRRect, this->clipOp, this->clipAntiAlias);
+    } else if (this->clipPath) {
+        canvas->clipPath(*this->clipPath, this->clipOp, this->clipAntiAlias);
+    } else {
+        canvas->clipRect(SkRect::MakeWH(this->bounds.width(), this->bounds.height()), this->clipOp, this->clipAntiAlias);
+    }
+}
+
 SkRect RenderNode::onGetBounds() {
     if (!recordingMeasuresOwnBounds.empty() && recordingMeasuresOwnBounds.back()) {
         // Into a recording that measures its own drawing only: the damage walk takes this
@@ -1635,12 +1522,19 @@ size_t RenderNode::onApproximateBytesUsed() {
 }
 
 
+// How deep in node drawings this thread is (real drawing only, not damage walks).
+static thread_local int nodeDrawDepth = 0;
+
 void RenderNode::onDraw(SkCanvas* canvas) {
     DamageWalk* walk = DamageWalk::get();
     if (walk && walk->isWalking(canvas)) {
         this->walkDamage(canvas, walk);
         return;
     }
+    if (nodeDrawDepth == 0) {
+        RasterCache::onTopLevelDraw();
+    }
+    DepthScope drawing(nodeDrawDepth);
     this->updateMatrix();
     // Whatever draws it next draws its current state, so its next change is news again.
     this->subtreeChangeRelayed = false;
@@ -1670,6 +1564,8 @@ void RenderNode::onDraw(SkCanvas* canvas) {
 
 void RenderNode::drawNode(SkCanvas* canvas, LayerBatch* batch) {
     canvas->translate(this->bounds.left(), this->bounds.top());
+    // Where the node draws at rest (its own transform left out), for a texture kept while it moves.
+    const SkM44 restCtm = canvas->getLocalToDevice();
     if (!this->matrixIdentity) {
         canvas->concat(this->transformMatrix);
     }
@@ -1681,6 +1577,10 @@ void RenderNode::drawNode(SkCanvas* canvas, LayerBatch* batch) {
         auto lightGeometry = this->context->getLightGeometry();
         auto lightInfo = this->context->getLightInfo();
         this->drawShadow(canvas, lightGeometry, lightInfo);
+    }
+    if (!this->layerPaint && this->drawFromCache(canvas, restCtm)) {
+        // Its clip and content, from the texture it keeps.
+        return;
     }
 
     if (this->clip) {
@@ -1699,7 +1599,7 @@ void RenderNode::drawNode(SkCanvas* canvas, LayerBatch* batch) {
 
     if (this->layerPaint) {
         auto rect = SkRect::MakeWH(this->bounds.width(), this->bounds.height());
-        if (this->drawRetainedLayer(canvas, rect)) {
+        if (this->drawFromCache(canvas, restCtm)) {
             return;
         }
         if (batch && this->layerBatchable && batch->composite(this, canvas, *this->layerPaint, rect)) {
@@ -1753,10 +1653,16 @@ void RenderNode::drawLayerContent(SkCanvas* canvas) {
 // Mirrors drawNode on the collect pass's canvas, without drawing anything.
 void RenderNode::collectLayers(SkCanvas* canvas, LayerBatch* batch) {
     canvas->translate(this->bounds.left(), this->bounds.top());
+    const SkM44 restCtm = canvas->getLocalToDevice();
     if (!this->matrixIdentity) {
         canvas->concat(this->transformMatrix);
     }
     if (this->rejectedByDamage(canvas)) {
+        return;
+    }
+    if (!this->layerPaint && this->alpha >= 1.0f && this->hasBatchableLayerInSubtree() &&
+        this->cacheWillDraw(canvas, batch->targetCanvas(), restCtm)) {
+        // Its texture holds the layers below it.
         return;
     }
 
@@ -1776,7 +1682,8 @@ void RenderNode::collectLayers(SkCanvas* canvas, LayerBatch* batch) {
 
     if (this->layerPaint) {
         // A layer nested in another is left to saveLayer, so the walk stops at the first.
-        if (this->layerBatchable && !this->retainedLayerMatches(canvas)) {
+        // One drawn from its texture needs no atlas region.
+        if (this->layerBatchable && !this->cacheWillDraw(canvas, batch->targetCanvas(), restCtm)) {
             batch->request(this, canvas, SkRect::MakeWH(this->bounds.width(), this->bounds.height()));
         }
         return;
@@ -1800,171 +1707,6 @@ void RenderNode::relaySubtreeChange() {
         renderNode->subtreeGeneration++;
         renderNode->relaySubtreeChange();
     }
-}
-
-void RenderNode::releaseRetainedLayer() {
-    if (this->retainedLayer) {
-        this->retainedLayer->release();
-        this->retainedLayer->hasLastKey = false;
-    }
-}
-
-bool RenderNode::retainedLayerMatches(SkCanvas* canvas) const {
-    const RetainedLayer* retained = this->retainedLayer.get();
-    return retained && retained->image && retained->key.content == this->subtreeGeneration &&
-           sameMatrix(retained->key.ctm, canvas->getLocalToDevice());
-}
-
-bool RenderNode::drawRetainedLayer(SkCanvas* canvas, const SkRect& rect) {
-    // Changes below a node only reach it through the observers, which are tracked with the
-    // snapshot cache.
-    if (!layerRetainingEnabled() || !this->context->shouldUseSnapshotCache() ||
-        !canvas->recordingContext() || canvas->recorder()) {
-        return false;
-    }
-    bool filtered = this->layerPaint->getImageFilter() != nullptr;
-    if (!this->layerBatchable) {
-        // An image filter layer whose restore is otherwise a plain composite.
-        SkPaint unfiltered(*this->layerPaint);
-        unfiltered.setImageFilter(nullptr);
-        if (!filtered || !isBatchableLayerPaint(unfiltered)) {
-            return false;
-        }
-    }
-    SkDevice* device = SkCanvasPriv::TopDevice(canvas);
-    if (!device || !(device->deviceToGlobal() == SkM44()) || device->isClipEmpty()) {
-        return false;
-    }
-    drainGraveyard();
-
-    RetainedLayerKey key;
-    key.context = canvas->recordingContext();
-    key.ctm = device->localToDevice44();
-    if (filtered) {
-        SkM44 inverse;
-        if (!key.ctm.isFinite() || !key.ctm.invert(&inverse)) {
-            return false;
-        }
-        // The clip within the filter's output: what a damage clip around the whole output leaves
-        // the same as a full one.
-        key.bounds = device->devClipBounds();
-        SkRect output = this->layerPaint->getImageFilter()->computeFastBounds(rect);
-        SkIRect outputBounds = key.ctm.asM33().mapRect(output).roundOut();
-        outputBounds.outset(1, 1);
-        if (!key.bounds.intersect(outputBounds)) {
-            return false;
-        }
-    } else if (!layerContentBounds(key.ctm, rect, &key.bounds) || !key.bounds.intersect(device->devClipBounds())) {
-        return false;
-    }
-    key.content = this->subtreeGeneration;
-    key.paint = filtered ? this->layerPaintGeneration : 0;
-    key.lighting = this->context->getLightingGeneration();
-    SkImageInfo targetInfo = canvas->imageInfo();
-    key.colorType = targetInfo.colorType();
-    key.colorSpace = targetInfo.colorSpace();
-
-    if (!this->retainedLayer) {
-        this->retainedLayer = std::make_unique<RetainedLayer>();
-    }
-    RetainedLayer* retained = this->retainedLayer.get();
-    // A clip inside the one the texture was rendered for (a damage clip, a layer scrolled partly
-    // out) draws from it too.
-    bool covered = retained->image && retained->key.sameExceptBounds(key) && retained->key.bounds.contains(key.bounds);
-    if (!covered) {
-        if (retained->image) {
-            retained->churn = retained->hits < kRetainedLayerPayback
-                ? std::min(retained->churn + 1, kRetainedLayerMaxChurn)
-                : std::max(retained->churn - 1, 0);
-        }
-        retained->release();
-        retained->hits = 0;
-        if (retained->hasLastKey && retained->lastKey == key) {
-            retained->stableDraws++;
-        } else {
-            retained->stableDraws = 1;
-        }
-        retained->lastKey = key;
-        retained->hasLastKey = true;
-        if (retained->stableDraws < (kRetainedLayerStableDraws << retained->churn)) {
-            return false;
-        }
-
-        // The same layer on enough draws in a row: render it once, and keep it.
-        SkIRect area = filtered ? SkIRect::MakeLTRB(0, 0, key.bounds.right(), key.bounds.bottom()) : key.bounds;
-        if (area.width() <= 0 || area.height() <= 0 || area.width() > 8192 || area.height() > 8192) {
-            return false;
-        }
-        SkColorType colorType = key.colorType;
-        if (SkColorTypeBytesPerPixel(colorType) <= 4 &&
-            colorType != kRGBA_8888_SkColorType && colorType != kBGRA_8888_SkColorType) {
-            colorType = kN32_SkColorType;
-        }
-        SkImageInfo info = SkImageInfo::Make(area.width(), area.height(), colorType, kPremul_SkAlphaType,
-                                             targetInfo.refColorSpace());
-        size_t bytes = info.computeMinByteSize();
-        if (retainedLayerBytes.load(std::memory_order_relaxed) + bytes > layerRetainingBudget()) {
-            return false;
-        }
-        SkSurfaceProps props = canvas->getTopProps().cloneWithPixelGeometry(kUnknown_SkPixelGeometry);
-        sk_sp<SkSurface> surface = canvas->makeSurface(info, &props);
-        if (!surface) {
-            return false;
-        }
-        SkCanvas* layerCanvas = surface->getCanvas();
-        layerCanvas->clear(SK_ColorTRANSPARENT);
-        if (filtered) {
-            // The filtered layer as saveLayer makes it: the same device space and clip bounds,
-            // composited into the texture as is, so the texture holds the filter's output.
-            layerCanvas->clipRect(SkRect::Make(key.bounds));
-            layerCanvas->setMatrix(key.ctm);
-            SkPaint filterPaint;
-            filterPaint.setImageFilter(this->layerPaint->refImageFilter());
-            layerCanvas->saveLayer(rect, &filterPaint);
-            this->drawLayerContent(layerCanvas);
-            layerCanvas->restore();
-            retained->origin = { 0, 0 };
-        } else {
-            // The layer's device, as SkCanvas::internalSaveLayer sets it up.
-            layerCanvas->setMatrix(SkM44::Translate(static_cast<float>(-key.bounds.left()),
-                                                    static_cast<float>(-key.bounds.top())) * key.ctm);
-            this->drawLayerContent(layerCanvas);
-            retained->origin = { key.bounds.left(), key.bounds.top() };
-        }
-        retained->image = surface->makeTemporaryImage();
-        if (!retained->image) {
-            return false;
-        }
-        retained->surface = std::move(surface);
-        retained->key = key;
-        retained->bytes = bytes;
-        retained->thread = std::this_thread::get_id();
-        retainedLayerBytes.fetch_add(bytes, std::memory_order_relaxed);
-        if (layerBatchingLog()) {
-            fprintf(stderr, "[skiko] retained layer %dx%d%s, %zu KB retained in all\n", area.width(), area.height(),
-                    filtered ? " (filtered)" : "", retainedLayerBytes.load() >> 10);
-        }
-    }
-
-    retained->hits++;
-    SkPaint paint = layerRestorePaint(*this->layerPaint);
-    SkIRect bounds = key.bounds;
-    if (filtered) {
-        // Outside the filter's output the texture is transparent, which the paint leaves as is.
-        SkRect output = this->layerPaint->getImageFilter()->computeFastBounds(rect);
-        SkIRect outputBounds = key.ctm.asM33().mapRect(output).roundOut();
-        outputBounds.outset(1, 1);
-        if (!bounds.intersect(outputBounds)) {
-            return true;
-        }
-    }
-    SkRect src = SkRect::Make(bounds.makeOffset(-retained->origin.x(), -retained->origin.y()));
-    canvas->save();
-    canvas->resetMatrix();
-    canvas->drawImageRect(retained->image.get(), src, SkRect::Make(bounds), SkSamplingOptions(), &paint,
-                          SkCanvas::kFast_SrcRectConstraint);
-    canvas->restore();
-    return true;
 }
 
 bool RenderNode::hasBatchableLayerInSubtree() {
@@ -2112,8 +1854,9 @@ bool RenderNode::shouldBeReferenced() const {
     return this->volatileNode ||
            this->shadowElevation > 0.0f ||
            (this->layerBatchable && layerBatchingEnabled()) ||
-           (this->layerPaint && layerRetainingEnabled()) ||
-           (this->alpha < 1.0f && !this->layerPaint && !this->dependencies.empty());
+           (this->layerPaint && RasterCache::retainLayers()) ||
+           (this->alpha < 1.0f && !this->layerPaint && !this->dependencies.empty()) ||
+           const_cast<RenderNode*>(this)->mayCacheContent();
 }
 
 bool RenderNode::drawsTransformDependentContent() const {
