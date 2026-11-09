@@ -222,6 +222,8 @@ class RenderNodeTwinsTest {
         var worstReference = 0
         var worst = 0
         for ((index, change) in changes.withIndex()) {
+            // A host's frame: the caches count each tree's draws in it once.
+            RenderNodeCaches.beginFrame()
             live.change()
             twinned.change()
             reference.change()
@@ -284,6 +286,97 @@ class RenderNodeTwinsTest {
         if (worstReference > 0) fail("damage-clipped twin frames differ from the nodes' own by up to $worstReference")
         // A retained blur may differ from its saveLayer by 1, and a damage-clipped buffer keeps whichever drew last.
         if (worst > 2) fail("damage-clipped twin frames differ from full frames by up to $worst")
+    }
+
+    /**
+     * The textures nodes keep (retained layers, the raster cache) belong to the twins where twins are drawn: a twin
+     * frame drawn with them, frame after frame while a badge inside a cached grid changes, equals the same twin frame
+     * drawn without them (within 1/255 on Ganesh, the raster cache's rounding), and the twins hold textures.
+     */
+    @Test
+    fun twinsKeepTexturesThatMatchDrawingWithoutThem() {
+        val device = MTLCreateSystemDefaultDevice() ?: return
+        val queue = device.newCommandQueue() ?: return
+        val gpu = DirectContext.makeMetal(device.objcPtr(), queue.objcPtr())
+        val context = RenderNodeContext(snapshotCache = true)
+        val nodes = mutableListOf<RenderNode>()
+        fun node(bounds: Rect, block: RenderNode.() -> Unit = {}, draw: Canvas.() -> Unit) = RenderNode(context).also {
+            it.bounds = bounds
+            it.block()
+            it.recordContent(draw)
+            nodes += it
+        }
+        val font = Font(null, 11f)
+        val cards = (0 until 8).map { i ->
+            node(Rect(6f + (i % 4) * 76f, 8f + (i / 4) * 50f, 76f + (i % 4) * 76f, 52f + (i / 4) * 50f), {
+                clip = true
+                setClipRRect(0f, 0f, 70f, 44f, floatArrayOf(8f), antiAlias = true)
+            }) {
+                drawRect(Rect(0f, 0f, 70f, 44f), Paint().apply { color = Color.makeRGB(40 + i * 23, 80, 150) })
+                drawCircle(12f, 12f, 7f, Paint().apply { color = Color.makeARGB(200, 255, 255, 255) })
+                drawString("Card $i", 4.5f, 36.3f, font, Paint().apply { color = Color.WHITE })
+                drawString("${i * 7}", 50.5f, 22.3f, font, Paint().apply { color = Color.makeARGB(180, 255, 230, 200) })
+            }
+        }
+        var badgeColor = Color.RED
+        val badge = node(Rect(290f, 4f, 310f, 16f)) { drawRect(Rect(0f, 0f, 20f, 12f), Paint().apply { color = badgeColor }) }
+        val grid = node(Rect(2f, 2f, 318f, 112f), {
+            clip = true
+            setClipRRect(0f, 0f, 316f, 110f, floatArrayOf(12f), antiAlias = true)
+        }) {
+            drawRect(Rect(0f, 0f, 316f, 110f), Paint().apply { color = Color.makeRGB(24, 26, 33) })
+            cards.forEach { it.drawInto(this) }
+            badge.drawInto(this)
+        }
+        val page = node(Rect(10.25f, 120f, 170.25f, 230f), { layerPaint = Paint().apply { setAlphaf(0.7f) } }) {
+            drawRRect(RRect.makeXYWH(0f, 0f, 160f, 110f, 10f), Paint().apply { color = Color.makeRGB(70, 80, 100) })
+            drawString("Static page", 8.25f, 40.5f, font, Paint().apply { color = Color.WHITE })
+        }
+        val root = node(Rect(0f, 0f, width.toFloat(), height.toFloat())) {
+            drawRect(Rect(0f, 0f, width.toFloat(), height.toFloat()), Paint().apply { color = Color.makeRGB(15, 17, 28) })
+            grid.drawInto(this)
+            page.drawInto(this)
+        }
+        val twins = RenderNodeTwins()
+        fun surface() = Surface.makeRenderTarget(gpu, false, ImageInfo.makeN32Premul(width, height), 0, SurfaceOrigin.TOP_LEFT, null, false)!!
+        val cached = surface()
+        val reference = surface()
+        var worst = 0
+        var held = 0
+        for (frame in 0 until 10) {
+            if (frame == 5) {
+                badgeColor = Color.GREEN
+                badge.recordContent { drawRect(Rect(0f, 0f, 20f, 12f), Paint().apply { color = badgeColor }) }
+            }
+            // The drawing thread's frame (a host drawing twins on a render thread calls it there).
+            RenderNodeCaches.beginFrame()
+            val recording = twins.beginRecording(width.toFloat(), height.toFloat())
+            root.drawInto(recording)
+            val recorded = twins.finishRecording()
+            val twinFrame = twins.sync(recorded)
+            recorded.close()
+            twins.releasePending()
+            cached.canvas.clear(Color.WHITE)
+            twinFrame.draw(cached.canvas)
+            RenderNodeCaches.drawWithoutCaches {
+                reference.canvas.clear(Color.WHITE)
+                twinFrame.draw(reference.canvas)
+            }
+            twinFrame.close()
+            gpu.flush(); gpu.submit(syncCpu = true)
+            val difference = maxDifference(pixels(cached), pixels(reference))
+            held = maxOf(held, RenderNodeCaches.count)
+            println("twin textures frame $frame: cached vs without: max difference $difference; ${RenderNodeCaches.count} textures")
+            worst = maxOf(worst, difference)
+        }
+        twins.close()
+        cached.close(); reference.close()
+        nodes.forEach { it.close() }
+        context.close(); font.close()
+        RenderNodeCaches.purge()
+        gpu.close()
+        assertTrue(held >= 2, "the twins of the grid and the page keep textures")
+        if (worst > 1) fail("twin textures differ from drawing without them by up to $worst")
     }
 
     @Test

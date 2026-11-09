@@ -23,6 +23,19 @@ class DirectContext internal constructor(ptr: NativePointer, managed: Boolean = 
         }
 
         /**
+         * A Metal context whose shader programs persist in [shaderCacheDirectory] (Ganesh's persistent cache): a
+         * program the context builds is stored there (its Metal source, one file a program), and a later context, in
+         * this process or the next, loads it instead of translating it again, so a new effect's first frame (a blur, a
+         * gradient) doesn't stall on every launch. The directory is made if missing; contexts may share it.
+         */
+        fun makeMetal(devicePtr: NativePointer, queuePtr: NativePointer, shaderCacheDirectory: String): DirectContext {
+            Stats.onNativeCall()
+            val ptr = interopScope { _nMakeMetalWithShaderCache(devicePtr, queuePtr, toInterop(shaderCacheDirectory)) }
+            if (ptr == NullPointer) throw RenderException("Can't create Metal DirectContext")
+            return DirectContext(ptr)
+        }
+
+        /**
          *
          * Creates Direct3D direct rendering context from D3D12 native objects.
          *
@@ -353,6 +366,13 @@ private external fun _nMakeGL(): NativePointer
 // Native call path: GrDirectContexts::MakeMetal -> GrMtlTrampoline::MakeGpu -> GrMtlGpu::Make
 @ForceNativeThreadState
 private external fun _nMakeMetal(devicePtr: NativePointer, queuePtr: NativePointer): NativePointer
+
+@ExternalSymbolName("org_jetbrains_skia_DirectContext__1nMakeMetalWithShaderCache")
+// Needs ForceNativeThreadState: creates a GPU context and queries the Metal device, which calls Metal, and may make
+// the cache's directory.
+// Native call path: FileShaderCache::forDirectory, GrDirectContexts::MakeMetal -> GrMtlTrampoline::MakeGpu
+@ForceNativeThreadState
+private external fun _nMakeMetalWithShaderCache(devicePtr: NativePointer, queuePtr: NativePointer, shaderCacheDirectory: InteropPointer): NativePointer
 
 @ExternalSymbolName("org_jetbrains_skia_DirectContext__1nMakeDirect3D")
 // Needs ForceNativeThreadState: creates a Direct3D 12 GPU context, which is GPU setup work.

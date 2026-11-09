@@ -2,6 +2,9 @@
 #include <iostream>
 #include <jni.h>
 #include "ganesh/GrDirectContext.h"
+#include "node/RenderNodeRasterCache.h"
+#include "FileShaderCache.h"
+#include "interop.hh"
 #include "ganesh/gl/GrGLAssembleInterface.h"
 #include "ganesh/gl/GrGLDirectContext.h"
 #include "ganesh/gl/GrGLInterface.h"
@@ -29,6 +32,20 @@ extern "C" JNIEXPORT jlong JNICALL Java_org_jetbrains_skia_DirectContextKt__1nMa
     backendContext.fDevice.retain(device);
     backendContext.fQueue.retain(queue);
     sk_sp<GrDirectContext> instance = GrDirectContexts::MakeMetal(backendContext);
+    return reinterpret_cast<jlong>(instance.release());
+}
+
+extern "C" JNIEXPORT jlong JNICALL Java_org_jetbrains_skia_DirectContextKt__1nMakeMetalWithShaderCache
+  (JNIEnv* env, jclass jclass, jlong devicePtr, jlong queuePtr, jstring directoryStr) {
+    GrMtlBackendContext backendContext = {};
+    GrMTLHandle device = reinterpret_cast<GrMTLHandle>(static_cast<uintptr_t>(devicePtr));
+    GrMTLHandle queue = reinterpret_cast<GrMTLHandle>(static_cast<uintptr_t>(queuePtr));
+    backendContext.fDevice.retain(device);
+    backendContext.fQueue.retain(queue);
+    GrContextOptions options;
+    SkString directory = skString(env, directoryStr);
+    options.fPersistentCache = skiko::FileShaderCache::forDirectory(directory.c_str());
+    sk_sp<GrDirectContext> instance = GrDirectContexts::MakeMetal(backendContext, options);
     return reinterpret_cast<jlong>(instance.release());
 }
 #endif
@@ -366,6 +383,8 @@ extern "C" JNIEXPORT void JNICALL Java_org_jetbrains_skia_DirectContextKt_Direct
 extern "C" JNIEXPORT void JNICALL Java_org_jetbrains_skia_DirectContextKt_DirectContext_1nPerformDeferredCleanup
   (JNIEnv* env, jclass jclass, jlong ptr, jlong msNotUsed, jboolean scratchResourcesOnly) {
     GrDirectContext* context = reinterpret_cast<GrDirectContext*>(static_cast<uintptr_t>(ptr));
+    // Render nodes' textures not drawn for as long go too (they aren't scratch resources).
+    if (!scratchResourcesOnly) skiko::node::RasterCache::purge(msNotUsed, static_cast<GrRecordingContext*>(context));
     context->performDeferredCleanup(std::chrono::milliseconds(msNotUsed),
         scratchResourcesOnly ? GrPurgeResourceOptions::kScratchResourcesOnly : GrPurgeResourceOptions::kAllResources);
 }
@@ -373,6 +392,7 @@ extern "C" JNIEXPORT void JNICALL Java_org_jetbrains_skia_DirectContextKt_Direct
 extern "C" JNIEXPORT void JNICALL Java_org_jetbrains_skia_DirectContextKt_DirectContext_1nFreeGpuResources
   (JNIEnv* env, jclass jclass, jlong ptr) {
     GrDirectContext* context = reinterpret_cast<GrDirectContext*>(static_cast<uintptr_t>(ptr));
+    skiko::node::RasterCache::purge(0, static_cast<GrRecordingContext*>(context));
     context->freeGpuResources();
 }
 
@@ -429,5 +449,6 @@ extern "C" JNIEXPORT void JNICALL Java_org_jetbrains_skia_DirectContextKt__1nRes
 extern "C" JNIEXPORT void JNICALL Java_org_jetbrains_skia_DirectContextKt__1nAbandon
   (JNIEnv* env, jclass jclass, jlong ptr, jint flags) {
     GrDirectContext* context = reinterpret_cast<GrDirectContext*>(static_cast<uintptr_t>(ptr));
+    skiko::node::RasterCache::onGaneshContextReleasing(static_cast<GrRecordingContext*>(context));
     context->abandonContext();
 }
