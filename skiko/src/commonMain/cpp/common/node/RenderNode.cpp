@@ -28,6 +28,7 @@
 #include "node/RenderNode.h"
 #include "node/RenderNodeContext.h"
 #include "node/RenderNodeDamage.h"
+#include "node/RenderNodeTwins.h"
 
 namespace skiko {
 namespace node {
@@ -1257,8 +1258,21 @@ void DamageWalk::walkRoot(RenderNode* node, const SkMatrix& matrix, Accumulator*
     *result = this->pop();
 }
 
+// A node's render twin (see RenderNodeTwins) and the node's state it was last synced from.
+struct TwinState {
+    sk_sp<RenderNode> node;
+    sk_sp<RenderNodeTwins> owner;
+    bool synced = false;
+    uint32_t ownGeneration = 0;
+    uint32_t propertyGeneration = 0;
+    uint32_t contentGeneration = 0;
+    uint32_t subtreeGeneration = 0;
+};
+
 RenderNode::RenderNode(const sk_sp<RenderNodeContext>& context)
     : context(context),
+      contentGeneration(0),
+      twinState(),
       ownGeneration(0),
       propertyGeneration(0),
       ownContentBounds(SkRect::MakeEmpty()),
@@ -1325,6 +1339,10 @@ RenderNode::~RenderNode() {
     // The observers set is necessarily empty: an observer holds a reference to this
     // node through its own dependencies, so it cannot outlive it.
     this->releaseDependencies();
+    if (this->twinState && this->twinState->node) {
+        // The twin may be drawn elsewhere right now: the thread drawing it releases it.
+        this->twinState->owner->handBack(std::move(this->twinState->node));
+    }
 }
 
 void RenderNode::setLayerPaint(const std::optional<SkPaint>& layerPaint) {
@@ -1582,6 +1600,7 @@ void RenderNode::endRecording() {
     }
     this->contentCache = std::move(recording);
     this->updateDependencies();
+    this->contentGeneration++;
     this->ownGeneration++;
     this->invalidateSnapshot(kContent | kDependencies);
 }
@@ -2494,6 +2513,256 @@ void RenderNode::setCameraLocation(float x, float y, float z) {
     this->transformCamera.fLocation = {x * 72.0f, y * 72.0f, lz};
     this->transformCamera.fObserver = {0, 0, lz};
     this->transformCamera.update();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Render twins (see RenderNodeTwins.h).
+//
+// A node's twin is a render node of the twin context, so it draws (atlas, retained layers, live
+// snapshots, snapshot invalidation through its own observers) as any node does. A sync visits a
+// node where it, or a node it draws, changed since the last sync -- its own generation, or its
+// subtree generation, which the change relay bumps on every node drawing a changed one -- and does
+// what a draw of the node would for the relay: the next change is news again. On a visit the twin
+// takes the node's properties where they changed, and its content where that changed: a recording
+// that draws no other node is immutable and shared as it is; one that does is replayed into a new
+// recording that draws the twins of those nodes (synced first). Without the snapshot cache no
+// change is relayed, so every node is visited and every content drawing nodes is recorded anew.
+// ---------------------------------------------------------------------------------------------
+
+// Replays a recording, drawing the twins of the render nodes it draws in their place (each synced
+// first, and referenced in twinDependencies where given) and inlining any other drawable, so that
+// what it records holds nothing the nodes' thread may change.
+class TwinRecordingCanvas : public SkNWayCanvas {
+public:
+    TwinRecordingCanvas(SkCanvas* canvas, RenderNodeTwins* twins, std::unordered_set<RenderNode*>* twinDependencies)
+        : SkNWayCanvas(canvas->imageInfo().width(), canvas->imageInfo().height()),
+          twins(twins), twinDependencies(twinDependencies) {
+        this->addCanvas(canvas);
+    }
+
+protected:
+    void onDrawDrawable(SkDrawable* drawable, const SkMatrix* matrix) override {
+        if (drawable->getFlattenableType() == kRenderNode_Type) {
+            RenderNode* twin = static_cast<RenderNode*>(drawable)->syncTwin(this->twins);
+            if (this->twinDependencies && this->twinDependencies->insert(twin).second) {
+                twin->ref();
+            }
+            this->SkNWayCanvas::onDrawDrawable(twin, matrix);
+            return;
+        }
+        drawable->draw(this, matrix);
+    }
+
+private:
+    RenderNodeTwins* twins;
+    std::unordered_set<RenderNode*>* twinDependencies;
+};
+
+RenderNode* RenderNode::syncTwin(RenderNodeTwins* twins) {
+    if (this->context->isTwin()) {
+        return this;
+    }
+    TwinState* state = this->twinState.get();
+    if (state && state->owner.get() != twins) {
+        // Drawn through other twins now: the old twin goes back to its owner.
+        state->owner->handBack(std::move(state->node));
+        this->twinState.reset();
+        state = nullptr;
+    }
+    // The lighting first: the twins of the nodes casting shadows read it where they draw.
+    RenderNodeContext* twinContext = this->context->twinContext();
+    if (!state) {
+        this->twinState = std::make_unique<TwinState>();
+        state = this->twinState.get();
+        state->owner = sk_ref_sp(twins);
+        state->node = sk_make_sp<RenderNode>(sk_ref_sp(twinContext));
+    }
+    RenderNode* twin = state->node.get();
+    bool relayed = this->context->shouldUseSnapshotCache();
+    if (state->synced && relayed && state->ownGeneration == this->ownGeneration &&
+        state->subtreeGeneration == this->subtreeGeneration) {
+        return twin;
+    }
+    twins->visited++;
+    // As a draw does (see onDraw): what the twin now shows is this node's current state.
+    this->subtreeChangeRelayed = false;
+    if (!state->synced || state->propertyGeneration != this->propertyGeneration) {
+        this->copyPropertiesTo(twin);
+    }
+    if (!state->synced || state->contentGeneration != this->contentGeneration || !relayed) {
+        this->syncTwinContent(twin, twins);
+    } else {
+        for (auto renderNode : this->dependencies) {
+            renderNode->syncTwin(twins);
+        }
+    }
+    state->synced = true;
+    state->ownGeneration = this->ownGeneration;
+    state->propertyGeneration = this->propertyGeneration;
+    state->contentGeneration = this->contentGeneration;
+    state->subtreeGeneration = this->subtreeGeneration;
+    this->copyDamageRecordTo(twin, twinContext);
+    return twin;
+}
+
+// What a damage walk found about this node, for the twin's drawing to skip it outside the clip as the node's own
+// would (see rejectedByDamage), where the record is of the node's current state; otherwise the twin has none. A
+// twin not visited keeps the record of its last visit: drawn elsewhere since, its transform differs and the record
+// rejects nothing; drawn where it was, the record still holds.
+void RenderNode::copyDamageRecordTo(RenderNode* twin, RenderNodeContext* twinContext) const {
+    const DamageRecord& record = this->damage;
+    DamageRecord& copy = twin->damage;
+    uint32_t lighting = this->shadowElevation > 0 ? this->context->getLightingGeneration() : 0;
+    if (record.tracker == 0 || record.ownGeneration != this->ownGeneration ||
+        record.propertyGeneration != this->propertyGeneration || record.subtreeGeneration != this->subtreeGeneration ||
+        record.lighting != lighting) {
+        copy.tracker = 0;
+        return;
+    }
+    copy.tracker = record.tracker;
+    copy.frame = record.frame;
+    copy.ownGeneration = twin->ownGeneration;
+    copy.propertyGeneration = twin->propertyGeneration;
+    copy.subtreeGeneration = twin->subtreeGeneration;
+    copy.lighting = twin->shadowElevation > 0 ? twinContext->getLightingGeneration() : 0;
+    copy.ctm = record.ctm;
+    copy.clip = record.clip;
+    copy.bounds = record.bounds;
+    copy.multiple = record.multiple;
+    copy.forced = record.forced;
+}
+
+void RenderNode::copyPropertiesTo(RenderNode* twin) {
+    // The setters ignore equal values, but for the layer paint and the clip, which compare here.
+    if (twin->layerPaint != this->layerPaint) {
+        twin->setLayerPaint(this->layerPaint);
+    }
+    twin->setBounds(this->bounds);
+    twin->setPivot(this->pivot);
+    twin->setAlpha(this->alpha);
+    twin->setScaleX(this->scaleX);
+    twin->setScaleY(this->scaleY);
+    twin->setTranslationX(this->translationX);
+    twin->setTranslationY(this->translationY);
+    twin->setShadowElevation(this->shadowElevation);
+    twin->setAmbientShadowColor(this->ambientShadowColor);
+    twin->setSpotShadowColor(this->spotShadowColor);
+    twin->setRotationX(this->rotationX);
+    twin->setRotationY(this->rotationY);
+    twin->setRotationZ(this->rotationZ);
+    twin->setCameraDistance(this->getCameraDistance());
+    if (twin->clipRect != this->clipRect || twin->clipRRect != this->clipRRect || twin->clipPath != this->clipPath ||
+        twin->clipOp != this->clipOp || twin->clipAntiAlias != this->clipAntiAlias) {
+        if (this->clipRect) {
+            twin->setClipRect(this->clipRect, this->clipOp, this->clipAntiAlias);
+        } else if (this->clipRRect) {
+            twin->setClipRRect(this->clipRRect, this->clipOp, this->clipAntiAlias);
+        } else {
+            twin->setClipPath(this->clipPath, this->clipOp, this->clipAntiAlias);
+        }
+    }
+    twin->setClip(this->clip);
+}
+
+void RenderNode::syncTwinContent(RenderNode* twin, RenderNodeTwins* twins) {
+    if (!this->contentCache) {
+        twin->setTwinContent(nullptr, {});
+        return;
+    }
+    if (this->context->shouldUseSnapshotCache() && this->dependencies.empty()) {
+        // Draws no node: immutable as it is, and replayed the same on any thread.
+        twin->setTwinContent(this->contentCache, {});
+        return;
+    }
+    twins->recorded++;
+    // The same cull as the recording's (the node's bounds when it recorded, or unbounded).
+    SkRect cull = this->contentCache->getBounds();
+    bool measured = cull == UNKNOWN_BOUNDS && twin->bbhFactory;
+    SkPictureRecorder recorder;
+    SkCanvas* canvas = recorder.beginRecording(cull, measured ? twin->bbhFactory : nullptr);
+    std::unordered_set<RenderNode*> twinDependencies;
+    {
+        TwinRecordingCanvas twinCanvas(canvas, twins, &twinDependencies);
+        this->contentCache->draw(&twinCanvas);
+    }
+    twin->setTwinContent(recorder.finishRecordingAsDrawable(), std::move(twinDependencies));
+}
+
+void RenderNode::setTwinContent(sk_sp<SkDrawable> content, std::unordered_set<RenderNode*>&& twinDependencies) {
+    // As endRecording does, with the dependencies known already and no damage measuring.
+    this->ownContentBoundsKnown = false;
+    this->ownContentBounds = SkRect::MakeEmpty();
+    this->contentOps.clear();
+    this->contentOpsKnown = false;
+    this->contentDamageUnknown = true;
+    this->contentCache = std::move(content);
+    this->releaseDependencies();
+    if (this->context->shouldUseSnapshotCache()) {
+        this->dependencies = std::move(twinDependencies);
+        for (auto renderNode : this->dependencies) {
+            renderNode->observers.insert(this);
+        }
+        this->layerInfoDirty = false;
+        this->markLayerInfoDirty();
+    } else {
+        for (auto renderNode : twinDependencies) {
+            renderNode->unref();
+        }
+    }
+    this->contentGeneration++;
+    this->ownGeneration++;
+    this->invalidateSnapshot(kContent | kDependencies);
+}
+
+RenderNodeTwins::RenderNodeTwins() = default;
+
+RenderNodeTwins::~RenderNodeTwins() = default;
+
+SkCanvas* RenderNodeTwins::beginRecording(float width, float height) {
+    this->bounds = SkRect::MakeWH(width, height);
+    return this->recorder.beginRecording(this->bounds);
+}
+
+sk_sp<SkDrawable> RenderNodeTwins::finishRecording() {
+    return this->recorder.finishRecordingAsDrawable();
+}
+
+sk_sp<SkDrawable> RenderNodeTwins::sync(SkDrawable* frame) {
+    this->visited = 0;
+    this->recorded = 0;
+    SkPictureRecorder twinRecorder;
+    SkCanvas* canvas = twinRecorder.beginRecording(frame->getBounds());
+    {
+        TwinRecordingCanvas twinCanvas(canvas, this, nullptr);
+        frame->draw(&twinCanvas);
+    }
+    return twinRecorder.finishRecordingAsDrawable();
+}
+
+void RenderNodeTwins::releasePending() {
+    std::vector<sk_sp<SkRefCnt>> released;
+    {
+        std::lock_guard<std::mutex> lock(this->mutex);
+        released.swap(this->pending);
+    }
+}
+
+void RenderNodeTwins::handBack(sk_sp<SkRefCnt> object) {
+    std::unique_lock<std::mutex> lock(this->mutex);
+    if (this->closed) {
+        lock.unlock();
+        return; // released here
+    }
+    this->pending.push_back(std::move(object));
+}
+
+void RenderNodeTwins::close() {
+    std::vector<sk_sp<SkRefCnt>> released;
+    {
+        std::lock_guard<std::mutex> lock(this->mutex);
+        this->closed = true;
+        released.swap(this->pending);
+    }
 }
 
 } // namespace node
