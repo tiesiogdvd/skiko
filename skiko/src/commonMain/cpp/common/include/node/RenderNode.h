@@ -206,6 +206,7 @@ private:
     void copyPropertiesTo(RenderNode *twin);
     void syncTwinContent(RenderNode *twin, RenderNodeTwins *twins);
     void setTwinContent(sk_sp<SkDrawable> content, std::unordered_set<RenderNode *>&& twinDependencies);
+    void copyDamageRecordTo(RenderNode *twin, RenderNodeContext *twinContext) const;
 
     sk_sp<RenderNodeContext> context;
 

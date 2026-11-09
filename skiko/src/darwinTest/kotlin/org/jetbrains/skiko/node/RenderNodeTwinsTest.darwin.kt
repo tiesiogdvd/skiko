@@ -202,6 +202,91 @@ class RenderNodeTwinsTest {
     }
 
     @Test
+    fun damageClippedTwinFramesMatchFullFrames() {
+        val device = MTLCreateSystemDefaultDevice() ?: return
+        val queue = device.newCommandQueue() ?: return
+        val gpu = DirectContext.makeMetal(device.objcPtr(), queue.objcPtr())
+        fun surface() = Surface.makeRenderTarget(gpu, false, ImageInfo.makeN32Premul(width, height), 0, SurfaceOrigin.TOP_LEFT, null, false)!!
+        // The live tree drawn whole; the twinned one walked for damage (the twins take the walk's records), its twins
+        // drawn only inside the damage over the last frame, as a render thread draws a back buffer.
+        val live = Tree(lighting(RenderNodeContext(snapshotCache = true)))
+        val twinned = Tree(lighting(RenderNodeContext(snapshotCache = true).apply { damageTracking = true }))
+        val twins = RenderNodeTwins()
+        val tracker = RenderNodeDamageTracker()
+        val full = surface()
+        val damaged = surface()
+        // The same damage drawn from a third tree's own nodes: what damage clipping alone gives, without twins.
+        val reference = Tree(lighting(RenderNodeContext(snapshotCache = true).apply { damageTracking = true }))
+        val referenceTracker = RenderNodeDamageTracker()
+        val referenceDamaged = surface()
+        var worstReference = 0
+        var worst = 0
+        for ((index, change) in changes.withIndex()) {
+            live.change()
+            twinned.change()
+            reference.change()
+            full.canvas.clear(Color.WHITE)
+            live.root.drawInto(full.canvas)
+
+            referenceTracker.beginFrame(width, height)
+            referenceTracker.addNode(reference.root)
+            val referenceRects = referenceTracker.endFrame()
+            fun drawReference(canvas: Canvas) {
+                if (referenceRects == null) {
+                    canvas.clear(Color.WHITE); reference.root.drawInto(canvas); return
+                }
+                for (i in referenceRects.indices step 4) {
+                    canvas.save()
+                    canvas.clipRect(Rect(referenceRects[i].toFloat(), referenceRects[i + 1].toFloat(), referenceRects[i + 2].toFloat(), referenceRects[i + 3].toFloat()))
+                    canvas.clear(Color.WHITE)
+                    reference.root.drawInto(canvas)
+                    canvas.restore()
+                }
+            }
+            drawReference(referenceDamaged.canvas)
+
+            tracker.beginFrame(width, height)
+            tracker.addNode(twinned.root)
+            val rects = tracker.endFrame()
+            val recording = twins.beginRecording(width.toFloat(), height.toFloat())
+            if (rects == null) {
+                recording.clear(Color.WHITE)
+                twinned.root.drawInto(recording)
+            } else {
+                for (i in rects.indices step 4) {
+                    recording.save()
+                    recording.clipRect(Rect(rects[i].toFloat(), rects[i + 1].toFloat(), rects[i + 2].toFloat(), rects[i + 3].toFloat()))
+                    recording.clear(Color.WHITE)
+                    twinned.root.drawInto(recording)
+                    recording.restore()
+                }
+            }
+            val frame = twins.finishRecording()
+            val twinFrame = twins.sync(frame)
+            frame.close()
+            twinFrame.draw(damaged.canvas)
+            twinFrame.close()
+            gpu.flush(); gpu.submit(syncCpu = true)
+            val difference = maxDifference(pixels(full), pixels(damaged))
+            val referenceDifference = maxDifference(pixels(full), pixels(referenceDamaged))
+            val twinAgainstReference = maxDifference(pixels(referenceDamaged), pixels(damaged))
+            println(
+                "damage frame $index: ${rects?.let { "${it.size / 4} rects" } ?: "whole"}, twins visited ${twins.visitedNodes}; " +
+                    "max difference $difference (the nodes' own damage-clipped frames: $referenceDifference; twins against them: $twinAgainstReference)"
+            )
+            worst = maxOf(worst, difference)
+            worstReference = maxOf(worstReference, twinAgainstReference)
+        }
+        tracker.close(); referenceTracker.close(); twins.close()
+        full.close(); damaged.close(); referenceDamaged.close()
+        live.close(); twinned.close(); reference.close(); gpu.close()
+        // Twins draw the damage as the nodes themselves do.
+        if (worstReference > 0) fail("damage-clipped twin frames differ from the nodes' own by up to $worstReference")
+        // A retained blur may differ from its saveLayer by 1, and a damage-clipped buffer keeps whichever drew last.
+        if (worst > 2) fail("damage-clipped twin frames differ from full frames by up to $worst")
+    }
+
+    @Test
     fun twinFramesMatchLiveFramesOnRaster() {
         check(
             makeSurface = { Surface.makeRaster(ImageInfo.makeN32Premul(width, height)) },

@@ -2598,7 +2598,35 @@ RenderNode* RenderNode::syncTwin(RenderNodeTwins* twins) {
     state->propertyGeneration = this->propertyGeneration;
     state->contentGeneration = this->contentGeneration;
     state->subtreeGeneration = this->subtreeGeneration;
+    this->copyDamageRecordTo(twin, twinContext);
     return twin;
+}
+
+// What a damage walk found about this node, for the twin's drawing to skip it outside the clip as the node's own
+// would (see rejectedByDamage), where the record is of the node's current state; otherwise the twin has none. A
+// twin not visited keeps the record of its last visit: drawn elsewhere since, its transform differs and the record
+// rejects nothing; drawn where it was, the record still holds.
+void RenderNode::copyDamageRecordTo(RenderNode* twin, RenderNodeContext* twinContext) const {
+    const DamageRecord& record = this->damage;
+    DamageRecord& copy = twin->damage;
+    uint32_t lighting = this->shadowElevation > 0 ? this->context->getLightingGeneration() : 0;
+    if (record.tracker == 0 || record.ownGeneration != this->ownGeneration ||
+        record.propertyGeneration != this->propertyGeneration || record.subtreeGeneration != this->subtreeGeneration ||
+        record.lighting != lighting) {
+        copy.tracker = 0;
+        return;
+    }
+    copy.tracker = record.tracker;
+    copy.frame = record.frame;
+    copy.ownGeneration = twin->ownGeneration;
+    copy.propertyGeneration = twin->propertyGeneration;
+    copy.subtreeGeneration = twin->subtreeGeneration;
+    copy.lighting = twin->shadowElevation > 0 ? twinContext->getLightingGeneration() : 0;
+    copy.ctm = record.ctm;
+    copy.clip = record.clip;
+    copy.bounds = record.bounds;
+    copy.multiple = record.multiple;
+    copy.forced = record.forced;
 }
 
 void RenderNode::copyPropertiesTo(RenderNode* twin) {
