@@ -2578,6 +2578,9 @@ RenderNode* RenderNode::syncTwin(RenderNodeTwins* twins) {
         state->node = sk_make_sp<RenderNode>(sk_ref_sp(twinContext));
     }
     RenderNode* twin = state->node.get();
+    // What a RenderNodeAnimationClock animates decides how the twin is referenced and keeps its layer; the clock
+    // starting or ending an animation changes it without a generation, so it is copied before the up-to-date check.
+    twin->animatingProperties = this->animatingProperties;
     bool relayed = this->context->shouldUseSnapshotCache();
     if (state->synced && relayed && state->ownGeneration == this->ownGeneration &&
         state->subtreeGeneration == this->subtreeGeneration) {
