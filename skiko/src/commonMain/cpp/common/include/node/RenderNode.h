@@ -132,6 +132,12 @@ public:
     // The damage walk's visit of this node (see RenderNodeDamageTracker).
     void walkDamage(SkCanvas *canvas, DamageWalk *walk);
 
+    // The properties a RenderNodeAnimationClock animates (a bit per AnimatedProperty), set by the clock. An animating
+    // node is referenced from the snapshots that reach it, and while only its alpha animates its layer keeps its
+    // texture from the first frame (the alpha is applied as the texture is composited).
+    uint32_t getAnimatingProperties() const { return this->animatingProperties; }
+    void setAnimatingProperties(uint32_t properties) { this->animatingProperties = properties; }
+
 protected:
     // SkDrawable
     SkRect onGetBounds() override;
@@ -284,6 +290,8 @@ private:
     SkCamera3D transformCamera;
     bool matrixIdentity;
     bool matrixDirty;
+
+    uint32_t animatingProperties = 0;
 };
 
 } // namespace node

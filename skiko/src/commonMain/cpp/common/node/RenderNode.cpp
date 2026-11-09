@@ -1886,7 +1886,10 @@ bool RenderNode::drawRetainedLayer(SkCanvas* canvas, const SkRect& rect) {
         }
         retained->lastKey = key;
         retained->hasLastKey = true;
-        if (retained->stableDraws < (kRetainedLayerStableDraws << retained->churn)) {
+        // A layer whose node animates its alpha alone (a fade) changes nothing the texture holds: kept from its first draw.
+        bool alphaOnly = this->animatingProperties == 1u;
+        int stableDraws = alphaOnly ? 1 : kRetainedLayerStableDraws;
+        if (retained->stableDraws < (stableDraws << retained->churn)) {
             return false;
         }
 
@@ -2109,7 +2112,7 @@ void RenderNode::updateLiveSnapshot() {
 }
 
 bool RenderNode::shouldBeReferenced() const {
-    return this->volatileNode ||
+    return this->volatileNode || this->animatingProperties != 0 ||
            this->shadowElevation > 0.0f ||
            (this->layerBatchable && layerBatchingEnabled()) ||
            (this->layerPaint && layerRetainingEnabled()) ||
