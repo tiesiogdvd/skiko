@@ -379,6 +379,194 @@ class RenderNodeTwinsTest {
         if (worst > 1) fail("twin textures differ from drawing without them by up to $worst")
     }
 
+    /**
+     * A render thread's frames over many random changes: a page in a retained layer holding a clipped list whose rows
+     * scroll in and out of view and whose icons change on and off screen, a header with a badge; the twins drawn
+     * damage-clipped into a kept back buffer (a frame without damage under an empty clip), as a host draws them, with
+     * the node textures on. Every frame equals the same tree drawn whole without textures: a texture is never
+     * composited with pixels its subtree's changes have made old, wherever the twins were drawn or not drawn before.
+     */
+    @Test
+    fun damageClippedTwinFramesWithTexturesFollowEveryChange() {
+        val device = MTLCreateSystemDefaultDevice() ?: return
+        val queue = device.newCommandQueue() ?: return
+        val gpu = DirectContext.makeMetal(device.objcPtr(), queue.objcPtr())
+        fun surface() = Surface.makeRenderTarget(gpu, false, ImageInfo.makeN32Premul(width, height), 0, SurfaceOrigin.TOP_LEFT, null, false)!!
+
+        class Page(val context: RenderNodeContext) {
+            val nodes = mutableListOf<RenderNode>()
+            fun node(bounds: Rect, block: RenderNode.() -> Unit = {}) =
+                RenderNode(context).also { it.bounds = bounds; it.block(); nodes += it }
+
+            // A lazy list: a row's nodes exist while it is within one row of the viewport (made as it scrolls in,
+            // closed as it leaves), and its icon "loads" two frames after the row appears, as album art does.
+            inner class Row(val index: Int, val bornFrame: Int) {
+                var iconColor = Color.makeRGB(60, 60, 60)
+                val icon = RenderNode(context).also { it.bounds = Rect(8f, 6f, 26f, 22f) }
+                val node = RenderNode(context).also {
+                    it.bounds = Rect(0f, 0f, 300f, 28f)
+                    it.clip = true
+                    it.setClipRect(Rect(0f, 0f, 300f, 28f))
+                    it.layerPaint = Paint().apply { setAlphaf(0.97f) }
+                }
+                fun recordIcon() = icon.recordContent { drawCircle(9f, 8f, 7f, Paint().apply { color = iconColor; isAntiAlias = true }) }
+                init {
+                    recordIcon()
+                    node.recordContent {
+                        drawRect(Rect(0f, 0f, 300f, 27f), Paint().apply { color = Color.makeRGB(30 + index * 6 % 120, 34, 48) })
+                        icon.drawInto(this)
+                        drawRect(Rect(34f, 10f, 34f + 8f * (index % 9 + 3), 18f), Paint().apply { color = Color.makeARGB(190, 230, 230, 240) })
+                    }
+                }
+                fun close() { node.close(); icon.close() }
+            }
+
+            val rowCount = 40
+            val rows = mutableMapOf<Int, Row>()
+            var frame = 0
+            var scroll = 0f
+            val listContent = node(Rect(0f, 0f, 300f, 180f))
+            val list = node(Rect(10f, 50f, 310f, 230f), { clip = true; setClipRect(Rect(0f, 0f, 300f, 180f)) })
+            fun layoutList() {
+                val first = ((scroll / 30f).toInt() - 1).coerceAtLeast(0)
+                val last = ((scroll + 180f) / 30f).toInt().plus(1).coerceAtMost(rowCount - 1)
+                var changed = false
+                rows.keys.filter { it < first || it > last }.forEach { rows.remove(it)!!.close(); changed = true }
+                for (i in first..last) if (i !in rows) { rows[i] = Row(i, frame); changed = true }
+                rows.values.forEach { it.node.bounds = Rect(0f, it.index * 30f - scroll, 300f, it.index * 30f - scroll + 28f) }
+                if (changed) listContent.recordContent { rows.keys.sorted().forEach { rows[it]!!.node.drawInto(this) } }
+            }
+            var badgeColor = Color.RED
+            val badge = node(Rect(280f, 10f, 300f, 22f))
+            fun recordBadge() = badge.recordContent { drawRect(Rect(0f, 0f, 20f, 12f), Paint().apply { color = badgeColor }) }
+            val header = node(Rect(0f, 0f, 320f, 40f), { clip = true; setClipRect(Rect(0f, 0f, 320f, 40f)) })
+            val page = node(Rect(0f, 0f, 320f, 240f), { layerPaint = Paint().apply { setAlphaf(0.95f) } })
+            // The glass over the list's top: the list's content drawn a second time, blurred (Haze's source and glass).
+            val glass = node(Rect(10f, 50f, 310f, 90f), {
+                clip = true
+                setClipRect(Rect(0f, 0f, 300f, 40f))
+                layerPaint = Paint().apply { imageFilter = ImageFilter.makeBlur(8f, 8f, FilterTileMode.CLAMP) }
+            })
+            val root = node(Rect(0f, 0f, 320f, 240f))
+
+            init {
+                layoutList()
+                list.recordContent { listContent.drawInto(this) }
+                recordBadge()
+                header.recordContent {
+                    drawRect(Rect(0f, 0f, 320f, 40f), Paint().apply { color = Color.makeRGB(50, 52, 70) })
+                    badge.drawInto(this)
+                }
+                page.recordContent {
+                    drawRect(Rect(0f, 0f, 320f, 240f), Paint().apply { color = Color.makeRGB(20, 22, 30) })
+                    header.drawInto(this)
+                    list.drawInto(this)
+                }
+                glass.recordContent { listContent.drawInto(this); drawRect(Rect(0f, 0f, 300f, 40f), Paint().apply { color = Color.makeARGB(60, 255, 255, 255) }) }
+                root.recordContent {
+                    drawRect(Rect(0f, 0f, 320f, 240f), Paint().apply { color = Color.BLACK })
+                    page.drawInto(this)
+                    glass.drawInto(this)
+                }
+            }
+
+            fun change(kind: Int, value: Int) {
+                frame++
+                // Icons whose row appeared two frames ago load.
+                rows.values.filter { frame - it.bornFrame == 2 }.forEach {
+                    it.iconColor = Color.makeRGB(200, 60 + it.index * 5 % 190, 60); it.recordIcon()
+                }
+                when (kind) {
+                    // A scroll step, back and forth over the rows.
+                    0, 1, 2 -> { scroll = ((scroll + (value % 41) - 18).coerceIn(0f, rowCount * 30f - 180f)); layoutList() }
+                    // An icon changes, on screen or off.
+                    3, 4 -> rows.values.toList().let { if (it.isNotEmpty()) it[value % it.size].apply { iconColor = Color.makeRGB(value % 256, 255 - value % 200, 90); recordIcon() } }
+                    5 -> { badgeColor = Color.makeRGB(value % 256, 120, 255 - value % 256); recordBadge() }
+                    // Frames without changes.
+                    else -> {}
+                }
+            }
+
+            fun close() { rows.values.forEach { it.close() }; nodes.forEach { it.close() }; context.close() }
+        }
+
+        val reference = Page(RenderNodeContext(measureDrawBounds = true, snapshotCache = true))
+        val twinned = Page(RenderNodeContext(measureDrawBounds = true, snapshotCache = true).apply { damageTracking = true })
+        val twins = RenderNodeTwins()
+        val tracker = RenderNodeDamageTracker()
+        val full = surface()
+        val buffer = surface()
+        val random = kotlin.random.Random(20261109)
+        var worst = 0
+        var worstFrame = -1
+        var stale = 0
+        var held = 0
+        var idle = 0
+        var lost = false
+        var notDrawnFrames = 0
+        for (frame in 0 until 400) {
+            // Changes come between still stretches, so textures are made (a layer drawn the same 3 times) and then used.
+            if (idle == 0 && random.nextInt(3) == 0) idle = 2 + random.nextInt(6)
+            val kind = if (idle > 0) { idle--; 9 } else random.nextInt(7)
+            val value = random.nextInt(1000)
+            reference.change(kind, value)
+            twinned.change(kind, value)
+
+            RenderNodeCaches.drawWithoutCaches {
+                full.canvas.clear(Color.WHITE)
+                reference.root.drawInto(full.canvas)
+            }
+
+            RenderNodeCaches.beginFrame()
+            tracker.beginFrame(width, height)
+            tracker.addNode(twinned.root)
+            // A frame after one that wasn't drawn is drawn whole (the host's lose()).
+            val rects = tracker.endFrame().takeUnless { lost || random.nextInt(4) == 0 }
+            // A whole frame bypasses the back buffer into the drawable; when none comes in time the host syncs the
+            // twins and draws nothing.
+            val notDrawn = rects == null && random.nextInt(3) == 0
+            val recording = twins.beginRecording(width.toFloat(), height.toFloat())
+            when {
+                rects == null -> { recording.clear(Color.WHITE); twinned.root.drawInto(recording) }
+                rects.isEmpty() -> {
+                    recording.save(); recording.clipRect(Rect(0f, 0f, 0f, 0f)); twinned.root.drawInto(recording); recording.restore()
+                }
+                else -> for (i in rects.indices step 4) {
+                    recording.save()
+                    recording.clipRect(Rect(rects[i].toFloat(), rects[i + 1].toFloat(), rects[i + 2].toFloat(), rects[i + 3].toFloat()))
+                    recording.clear(Color.WHITE)
+                    twinned.root.drawInto(recording)
+                    recording.restore()
+                }
+            }
+            val recorded = twins.finishRecording()
+            val twinFrame = twins.sync(recorded)
+            recorded.close()
+            twins.releasePending()
+            lost = notDrawn
+            if (notDrawn) { twinFrame.close(); notDrawnFrames++; continue }
+            twinFrame.draw(buffer.canvas)
+            twinFrame.close()
+            gpu.flush(); gpu.submit(syncCpu = true)
+
+            val difference = maxDifference(pixels(full), pixels(buffer))
+            if (difference > 2) {
+                stale++
+                if (stale <= 10) println("textures frame $frame (change $kind): ${rects?.let { "${it.size / 4} rects" } ?: "whole"}, max difference $difference")
+            }
+            if (difference > worst) { worst = difference; worstFrame = frame }
+            held = maxOf(held, RenderNodeCaches.count)
+        }
+        println("textures: $stale of 400 frames differ ($notDrawnFrames synced, not drawn); worst $worst at frame $worstFrame; up to $held textures")
+        tracker.close(); twins.close()
+        full.close(); buffer.close()
+        reference.close(); twinned.close()
+        RenderNodeCaches.purge()
+        gpu.close()
+        assertTrue(held >= 2, "the page's layer and the clipped rows keep textures")
+        if (worst > 2) fail("damage-clipped twin frames with textures differ from whole frames without them in $stale frames, by up to $worst (first at frame $worstFrame)")
+    }
+
     @Test
     fun twinFramesMatchLiveFramesOnRaster() {
         check(

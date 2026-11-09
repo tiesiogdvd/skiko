@@ -67,6 +67,8 @@ private:
     bool closed = false;
     int visited = 0;
     int recorded = 0;
+    // This sync's number, unique across all twins (see RenderNode::relaySubtreeChange).
+    uint64_t syncSerial = 0;
 };
 
 } // namespace node

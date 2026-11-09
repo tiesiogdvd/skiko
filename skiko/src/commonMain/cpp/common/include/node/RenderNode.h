@@ -301,8 +301,10 @@ private:
     // Changes whenever what this node draws inside its layer changes: its own content, or
     // anything about a node it draws (relayed through the observers).
     uint32_t subtreeGeneration;
-    // Whether the observers were told of a subtree change since this node was last drawn.
+    // Whether the observers were told of a subtree change since this node was last drawn; for a
+    // twin, only within the sync it was set in (see relaySubtreeChange).
     bool subtreeChangeRelayed;
+    uint64_t relayedInSync = 0;
     std::unique_ptr<NodeCache> cache;
     // Cached hasBatchableLayerInSubtree(), valid unless layerInfoDirty. A dirty node's
     // observers are dirty too (see markLayerInfoDirty).

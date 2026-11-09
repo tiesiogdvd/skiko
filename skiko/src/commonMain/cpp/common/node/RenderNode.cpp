@@ -1723,10 +1723,20 @@ void RenderNode::collectLayers(SkCanvas* canvas, LayerBatch* batch) {
 }
 
 void RenderNode::relaySubtreeChange() {
-    if (this->subtreeChangeRelayed) {
+    // The flag says that the observers, up to the root, already know of a change since this
+    // node's state was last drawn, which clears it (onDraw; for a live node also the damage walk
+    // and a sync). A twin's pixels can be drawn without its onDraw -- from an ancestor's texture or
+    // snapshot, or a replay that culls it -- so its flag can stay set for good, and its later
+    // changes would reach no ancestor: a texture above stays current, composited with old pixels
+    // (the UI frozen while its state moves). A twin changes only in a sync, and no texture is made
+    // during one, so a twin's flag holds for the sync it was set in: its first change of a later
+    // sync tells the observers again, however it was or wasn't drawn in between.
+    uint64_t sync = this->context->isTwin() ? this->context->twinSync() : 0;
+    if (this->subtreeChangeRelayed && this->relayedInSync == sync) {
         return;
     }
     this->subtreeChangeRelayed = true;
+    this->relayedInSync = sync;
     for (auto renderNode : this->observers) {
         renderNode->subtreeGeneration++;
         renderNode->relaySubtreeChange();
@@ -2334,6 +2344,8 @@ RenderNode* RenderNode::syncTwin(RenderNodeTwins* twins) {
     twins->visited++;
     // As a draw does (see onDraw): what the twin now shows is this node's current state.
     this->subtreeChangeRelayed = false;
+    // The twin's changes from here on are this sync's (see relaySubtreeChange).
+    twinContext->setTwinSync(twins->syncSerial);
     if (!state->synced || state->propertyGeneration != this->propertyGeneration) {
         this->copyPropertiesTo(twin);
     }
@@ -2476,6 +2488,8 @@ sk_sp<SkDrawable> RenderNodeTwins::finishRecording() {
 }
 
 sk_sp<SkDrawable> RenderNodeTwins::sync(SkDrawable* frame) {
+    static std::atomic<uint64_t> serials{0};
+    this->syncSerial = ++serials;
     this->visited = 0;
     this->recorded = 0;
     SkPictureRecorder twinRecorder;

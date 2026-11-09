@@ -39,6 +39,9 @@ public:
     // nodes' thread.
     RenderNodeContext* twinContext();
     bool isTwin() const { return this->twin; }
+    // A twin context: the sync (RenderNodeTwins) changing its nodes now, or that last did.
+    uint64_t twinSync() const { return this->twinSyncSerial; }
+    void setTwinSync(uint64_t serial) { this->twinSyncSerial = serial; }
 
 private:
     LightGeometry lightGeometry;
@@ -52,6 +55,7 @@ private:
     bool twin = false;
     sk_sp<RenderNodeContext> twinCtx;
     uint32_t twinLightingGeneration = 0;
+    uint64_t twinSyncSerial = 0;
     static std::atomic<int> measuringTrackers;
 };
 
