@@ -1,6 +1,6 @@
+#include <atomic>
 #include <cstdio>
 #include <cstring>
-#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -9,7 +9,70 @@
 #include "include/core/SkString.h"
 #include "FileShaderCache.h"
 
+// std::filesystem only on Windows: Apple's runtime has it from iOS 13 / macOS 10.15, below Skiko's minimums, so the
+// other platforms use POSIX.
+#ifdef _WIN32
+#include <filesystem>
+#else
+#include <cerrno>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
 namespace skiko {
+
+namespace {
+
+bool isDirectory(const std::string& path) {
+#ifdef _WIN32
+    std::error_code error;
+    return std::filesystem::is_directory(std::filesystem::path(path), error);
+#else
+    struct stat info;
+    return stat(path.c_str(), &info) == 0 && S_ISDIR(info.st_mode);
+#endif
+}
+
+// The directory and its missing parents; whether it is a directory afterwards.
+bool makeDirectories(const std::string& path) {
+#ifdef _WIN32
+    std::error_code error;
+    std::filesystem::create_directories(std::filesystem::path(path), error);
+#else
+    for (size_t slash = path.find('/', 1); ; slash = path.find('/', slash + 1)) {
+        std::string prefix = slash == std::string::npos ? path : path.substr(0, slash);
+        if (!prefix.empty() && mkdir(prefix.c_str(), 0755) != 0 && errno != EEXIST) {
+            break;
+        }
+        if (slash == std::string::npos) {
+            break;
+        }
+    }
+#endif
+    return isDirectory(path);
+}
+
+// Puts from in to's place, replacing a file there; false if it could not.
+bool replaceFile(const std::string& from, const std::string& to) {
+#ifdef _WIN32
+    std::error_code error;
+    std::filesystem::rename(std::filesystem::path(from), std::filesystem::path(to), error);
+    return !error;
+#else
+    return ::rename(from.c_str(), to.c_str()) == 0;
+#endif
+}
+
+void removeFile(const std::string& path) {
+#ifdef _WIN32
+    std::error_code error;
+    std::filesystem::remove(std::filesystem::path(path), error);
+#else
+    ::unlink(path.c_str());
+#endif
+}
+
+} // namespace
 
 static const uint32_t kMagic = 0x53434b53;  // "SKCS"
 static const uint32_t kVersion = 1;
@@ -23,9 +86,7 @@ FileShaderCache* FileShaderCache::forDirectory(const char* directory) {
     if (it != caches.end()) {
         return it->second.get();
     }
-    std::error_code error;
-    std::filesystem::create_directories(std::filesystem::path(key), error);
-    if (error && !std::filesystem::is_directory(std::filesystem::path(key))) {
+    if (!makeDirectories(key)) {
         return nullptr;
     }
     auto cache = std::unique_ptr<FileShaderCache>(new FileShaderCache(key));
@@ -44,7 +105,11 @@ std::string FileShaderCache::pathFor(const SkData& key) const {
     }
     char name[40];
     snprintf(name, sizeof(name), "%016llx.sksl", static_cast<unsigned long long>(hash));
-    return (std::filesystem::path(this->directory) / name).string();
+    std::string path = this->directory;
+    if (!path.empty() && path.back() != '/' && path.back() != '\\') {
+        path += '/';
+    }
+    return path + name;
 }
 
 sk_sp<SkData> FileShaderCache::load(const SkData& key) {
@@ -99,12 +164,8 @@ void FileShaderCache::store(const SkData& key, const SkData& data) {
                    fwrite(&size, sizeof(size), 1, file) == 1 &&
                    (data.size() == 0 || fwrite(data.data(), data.size(), 1, file) == 1);
     written = fclose(file) == 0 && written;
-    std::error_code error;
-    if (written) {
-        std::filesystem::rename(temporary, path, error);
-    }
-    if (!written || error) {
-        std::filesystem::remove(temporary, error);
+    if (!written || !replaceFile(temporary, path)) {
+        removeFile(temporary);
     }
 }
 
