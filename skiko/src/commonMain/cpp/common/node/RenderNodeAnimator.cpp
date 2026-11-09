@@ -592,7 +592,8 @@ bool AnimationCurve::decode(const float* data, int size, AnimationCurve* result)
 }
 
 // VectorizedKeyframesSpec.getValueFromNanos (no ArcSpline: every keyframe ArcLinear).
-float AnimationCurve::keyframesValue(int64_t playTimeNanos, float initial, float target) const {
+float AnimationCurve::keyframesValue(int64_t playTimeNanos, float initial, float target, bool* interpolated) const {
+    if (interpolated) *interpolated = false;
     int64_t playTimeMillis = playTimeNanos / kMillisToNanos;
     int32_t clampedPlayTime = static_cast<int32_t>(coerceIn(playTimeMillis - this->delayMillis, int64_t(0),
                                                             static_cast<int64_t>(this->durationMillis)));
@@ -606,6 +607,7 @@ float AnimationCurve::keyframesValue(int64_t playTimeNanos, float initial, float
     } else if (clampedPlayTime <= 0) {
         return initial;
     }
+    if (interpolated) *interpolated = true;
     int index = binarySearch(this->timestamps, clampedPlayTime);
     if (index < -1) {
         index = -(index + 2);
@@ -658,7 +660,7 @@ float AnimationCurve::specValue(int64_t playTimeNanos, float initial, float targ
         case Kind::Snap:
             return playTimeNanos < this->delayMillis * kMillisToNanos ? initial : target;
         case Kind::Keyframes:
-            return this->keyframesValue(playTimeNanos, initial, target);
+            return this->keyframesValue(playTimeNanos, initial, target, nullptr);
     }
     return target;
 }
@@ -691,8 +693,14 @@ float AnimationCurve::specVelocity(int64_t playTimeNanos, float initial, float t
             if (clamped < 0) {
                 return initialVelocity;
             }
-            float startNum = this->specValue((clamped - 1) * kMillisToNanos, initial, target, initialVelocity);
-            float endNum = this->specValue(clamped * kMillisToNanos, initial, target, initialVelocity);
+            bool startInterpolated, endInterpolated;
+            float startNum = this->keyframesValue((clamped - 1) * kMillisToNanos, initial, target, &startInterpolated);
+            float endNum = this->keyframesValue(clamped * kMillisToNanos, initial, target, &endInterpolated);
+            // Compose interpolates both into one shared vector, so where both are interpolated it subtracts a value
+            // from itself: 0.
+            if (startInterpolated && endInterpolated) {
+                return 0.0f;
+            }
             return (startNum - endNum) * 1000.0f;
         }
     }

@@ -78,7 +78,8 @@ public:
 private:
     float specValue(int64_t playTimeNanos, float initial, float target, float initialVelocity) const;
     float specVelocity(int64_t playTimeNanos, float initial, float target, float initialVelocity) const;
-    float keyframesValue(int64_t playTimeNanos, float initial, float target) const;
+    // interpolated: whether the value is interpolated between keyframes (not a keyframe's, the start or the end).
+    float keyframesValue(int64_t playTimeNanos, float initial, float target, bool* interpolated) const;
 
     Kind kind = Kind::Snap;
     int32_t durationMillis = 0;
