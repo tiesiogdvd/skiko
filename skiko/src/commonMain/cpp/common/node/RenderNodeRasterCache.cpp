@@ -789,7 +789,8 @@ NodeCache* RenderNode::cacheFor(SkCanvas* canvas, SkCanvas* target, const Textur
         return nullptr;
     }
     if (this->layerPaint) {
-        if (!RasterCache::retainLayers()) {
+        if (!RasterCache::retainLayers() || this->layerPaint->getAlphaf() == 0.0f) {
+            // Off, or a layer that shows nothing yet (a page about to fade in).
             return nullptr;
         }
         if (!this->layerBatchable) {
@@ -940,7 +941,8 @@ NodeCache::Decision RenderNode::cacheDecision(SkCanvas* canvas, SkCanvas* target
     }
     if (!texture) {
         offset = { 0, 0 };
-        if (promotable && cache->motionFrames >= kPromoteAfterFrames && RasterCache::mayRenderThisFrame()) {
+        // A node whose textures keep going stale before they pay for themselves waits longer for either kind.
+        if (promotable && cache->motionFrames >= (kPromoteAfterFrames << cache->churn) && RasterCache::mayRenderThisFrame()) {
             decision = NodeCache::kMakePromoted;
         } else if (stable && RasterCache::mayRenderThisFrame() &&
                    (kind != NodeTexture::kContent ||
