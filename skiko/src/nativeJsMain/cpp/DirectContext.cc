@@ -1,6 +1,7 @@
 #include <chrono>
 #include "ganesh/GrDirectContext.h"
 #include "node/RenderNodeRasterCache.h"
+#include "FileShaderCache.h"
 #include "ganesh/gl/GrGLInterface.h"
 #include "common.h"
 #include "ganesh/gl/GrGLDirectContext.h" // TODO: skia update: check if it's correct
@@ -44,6 +45,24 @@ SKIKO_EXPORT KNativePointer org_jetbrains_skia_DirectContext__1nMakeMetal
     backendContext.fDevice.retain(device);
     backendContext.fQueue.retain(queue);
     sk_sp<GrDirectContext> instance = GrDirectContexts::MakeMetal(backendContext);
+    return static_cast<KNativePointer>(instance.release());
+#else
+    return nullptr;
+#endif // SK_METAL
+}
+
+SKIKO_EXPORT KNativePointer org_jetbrains_skia_DirectContext__1nMakeMetalWithShaderCache
+  (KNativePointer devicePtr, KNativePointer queuePtr, KInteropPointer directoryStr) {
+#ifdef SK_METAL
+    GrMtlBackendContext backendContext = {};
+    GrMTLHandle device = reinterpret_cast<GrMTLHandle>((devicePtr));
+    GrMTLHandle queue = reinterpret_cast<GrMTLHandle>((queuePtr));
+    backendContext.fDevice.retain(device);
+    backendContext.fQueue.retain(queue);
+    GrContextOptions options;
+    SkString directory = skString(directoryStr);
+    options.fPersistentCache = skiko::FileShaderCache::forDirectory(directory.c_str());
+    sk_sp<GrDirectContext> instance = GrDirectContexts::MakeMetal(backendContext, options);
     return static_cast<KNativePointer>(instance.release());
 #else
     return nullptr;

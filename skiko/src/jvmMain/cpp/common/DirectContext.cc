@@ -3,6 +3,8 @@
 #include <jni.h>
 #include "ganesh/GrDirectContext.h"
 #include "node/RenderNodeRasterCache.h"
+#include "FileShaderCache.h"
+#include "interop.hh"
 #include "ganesh/gl/GrGLAssembleInterface.h"
 #include "ganesh/gl/GrGLDirectContext.h"
 #include "ganesh/gl/GrGLInterface.h"
@@ -30,6 +32,20 @@ extern "C" JNIEXPORT jlong JNICALL Java_org_jetbrains_skia_DirectContextKt__1nMa
     backendContext.fDevice.retain(device);
     backendContext.fQueue.retain(queue);
     sk_sp<GrDirectContext> instance = GrDirectContexts::MakeMetal(backendContext);
+    return reinterpret_cast<jlong>(instance.release());
+}
+
+extern "C" JNIEXPORT jlong JNICALL Java_org_jetbrains_skia_DirectContextKt__1nMakeMetalWithShaderCache
+  (JNIEnv* env, jclass jclass, jlong devicePtr, jlong queuePtr, jstring directoryStr) {
+    GrMtlBackendContext backendContext = {};
+    GrMTLHandle device = reinterpret_cast<GrMTLHandle>(static_cast<uintptr_t>(devicePtr));
+    GrMTLHandle queue = reinterpret_cast<GrMTLHandle>(static_cast<uintptr_t>(queuePtr));
+    backendContext.fDevice.retain(device);
+    backendContext.fQueue.retain(queue);
+    GrContextOptions options;
+    SkString directory = skString(env, directoryStr);
+    options.fPersistentCache = skiko::FileShaderCache::forDirectory(directory.c_str());
+    sk_sp<GrDirectContext> instance = GrDirectContexts::MakeMetal(backendContext, options);
     return reinterpret_cast<jlong>(instance.release());
 }
 #endif
